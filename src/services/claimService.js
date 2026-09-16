@@ -182,25 +182,18 @@ export const claimService = {
         console.log('Receipts list fetch error (non-fatal):', receiptFetchErr);
       }
 
-      // Check if ticket was found in allReceipts (by transId, or by tellerId/agentId, or by fullName)
-      const matchedReceipt =
-        allReceipts.find((item) => {
-          const itemTransId = String(item.transactionId || item.transId || '').trim().toLowerCase();
-          return (
-            itemTransId === transId.toLowerCase() ||
-            (baseTransId && itemTransId === baseTransId.toLowerCase())
-          );
-        }) ||
-        (agentId
-          ? allReceipts.find((item) => Number(item.tellerId || item.agentId || item.agent) === Number(agentId) && item.username)
-          : null) ||
-        (ticketList[0]?.fullName
-          ? allReceipts.find((item) => String(item.fullName || item.outlet || '').toLowerCase().trim() === String(ticketList[0].fullName).toLowerCase().trim() && item.username)
-          : null);
+      // Check if ticket was found in allReceipts strictly by transaction ID
+      const matchedReceipt = allReceipts.find((item) => {
+        const itemTransId = String(item.transactionId || item.transId || '').trim().toLowerCase();
+        return (
+          itemTransId === transId.toLowerCase() ||
+          (baseTransId && itemTransId === baseTransId.toLowerCase())
+        );
+      });
 
       const isFromClaimedReceipt = Boolean(matchedReceipt && Number(matchedReceipt.isClaim) === 1);
 
-      // If claimLookup did not return any tickets, but receipt exists in allReceipts, reconstruct ticket
+      // If claimLookup did not return any tickets, but receipt exists in allReceipts by exact transactionId, reconstruct ticket
       if (!ticketList.length && matchedReceipt) {
         const resolvedAgentId =
           agentId ||
@@ -251,7 +244,7 @@ export const claimService = {
           baseTransactionId: baseTransId,
           agentId: agentId || null,
           isVercel: isVercel,
-          message: 'No active bet ticket found for this Transaction ID.',
+          message: 'No active winning bet ticket found for this Transaction ID.',
           tickets: [],
         };
       }
@@ -300,20 +293,31 @@ export const claimService = {
         isVercelTicket(primaryTicket.transactionId) ||
         Boolean(primaryTicket.isVercel);
 
+      const tellerInfo =
+        matchedReceipt ||
+        allReceipts.find(
+          (item) =>
+            primaryTicket.fullName &&
+            String(item.fullName || item.outlet || '').toLowerCase().trim() === String(primaryTicket.fullName).toLowerCase().trim()
+        );
+
       let resolvedSupervisor = extractSupervisorFromObject(
         primaryTicket,
         payload,
         payload?.data,
         payload?.ticket,
-        matchedReceipt
+        matchedReceipt,
+        tellerInfo
       );
-      let resolvedUsername = extractUsernameFromObject(
-        primaryTicket,
-        payload,
-        payload?.data,
-        payload?.ticket,
-        matchedReceipt
-      ) || resolvedSupervisor;
+      let resolvedUsername =
+        extractUsernameFromObject(
+          primaryTicket,
+          payload,
+          payload?.data,
+          payload?.ticket,
+          matchedReceipt,
+          tellerInfo
+        ) || resolvedSupervisor;
 
       const resolvedClaimDate =
         primaryTicket.claimDate ||
