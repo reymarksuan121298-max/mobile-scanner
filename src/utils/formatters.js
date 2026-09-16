@@ -71,8 +71,65 @@ export const formatDate = (dateVal) => {
 };
 
 /**
+ * Format Claim Date to 'YYYY-MM-DD HH:mm' (e.g. 2026-09-02 11:34)
+ */
+export const formatClaimDate = (dateVal) => {
+  if (!dateVal) return '';
+  try {
+    let d;
+    if (dateVal instanceof Date) {
+      d = dateVal;
+    } else if (typeof dateVal === 'number') {
+      d = new Date(dateVal);
+    } else if (typeof dateVal === 'string') {
+      const trimmed = dateVal.trim();
+      if (!trimmed) return '';
+      // If already in exact YYYY-MM-DD HH:mm format
+      if (/^\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}$/.test(trimmed)) {
+        return trimmed;
+      }
+      const normalizedStr = trimmed.includes(' ') && !trimmed.includes('T') ? trimmed.replace(' ', 'T') : trimmed;
+      const parsed = new Date(normalizedStr);
+      if (!isNaN(parsed.getTime())) {
+        d = parsed;
+      } else {
+        d = new Date(trimmed);
+      }
+    } else {
+      d = new Date(dateVal);
+    }
+
+    if (d && !isNaN(d.getTime())) {
+      const year = d.getFullYear();
+      const month = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      const hours = String(d.getHours()).padStart(2, '0');
+      const minutes = String(d.getMinutes()).padStart(2, '0');
+      return `${year}-${month}-${day} ${hours}:${minutes}`;
+    }
+
+    if (typeof dateVal === 'string') {
+      const match = dateVal.match(/(\d{4})-(\d{1,2})-(\d{1,2})[T\s](\d{1,2}):(\d{1,2})/);
+      if (match) {
+        const y = match[1];
+        const m = match[2].padStart(2, '0');
+        const day = match[3].padStart(2, '0');
+        const h = match[4].padStart(2, '0');
+        const min = match[5].padStart(2, '0');
+        return `${y}-${m}-${day} ${h}:${min}`;
+      }
+    }
+    return String(dateVal);
+  } catch {
+    return String(dateVal || '');
+  }
+};
+
+export const formatDateTime = formatClaimDate;
+
+/**
  * Clean & Normalize Scanned Transaction ID / QR Code Value
- * Supports physical tickets, URLs, JSON payloads, and VERCEL agent IDs (e.g., 022226-UOOKNZNNVERCEL227)
+ * Supports physical hard copy tickets, receipts, URLs, JSON payloads, and VERCEL agent IDs (e.g., 022226-UOOKNZNNVERCEL227)
  */
 export const cleanTransId = (rawInput) => {
   if (!rawInput) return '';
@@ -89,24 +146,39 @@ export const cleanTransId = (rawInput) => {
         parsed.id ||
         parsed.code ||
         parsed.ticketId;
+      const possibleAgent = parsed.agentId || parsed.agent || parsed.agent_id;
       if (possibleKey) {
         str = String(possibleKey).trim();
+        if (possibleAgent && !str.toUpperCase().includes('VERCEL')) {
+          str = `${str}VERCEL${possibleAgent}`;
+        }
       }
     } catch {
       // Ignore JSON error, continue with string extraction
     }
   }
 
-  // 2. Handle URL query parameters if present (e.g. ?id=..., ?transId=...)
+  // 2. Handle URL query parameters if present (e.g. ?id=..., ?transId=..., ?agent=...)
   if (str.includes('?')) {
     const queryPart = str.split('?')[1];
     if (queryPart) {
       const params = queryPart.split('&');
+      let foundId = '';
+      let foundAgent = '';
       for (const param of params) {
         const [k, v] = param.split('=');
-        if (['id', 'transid', 'transactionid', 'code', 'ticket', 't'].includes((k || '').toLowerCase()) && v) {
-          str = decodeURIComponent(v);
-          break;
+        const key = (k || '').toLowerCase();
+        if (['id', 'transid', 'transactionid', 'code', 'ticket', 't'].includes(key) && v) {
+          foundId = decodeURIComponent(v);
+        }
+        if (['agent', 'agentid', 'agent_id', 'a'].includes(key) && v) {
+          foundAgent = decodeURIComponent(v);
+        }
+      }
+      if (foundId) {
+        str = foundId;
+        if (foundAgent && !str.toUpperCase().includes('VERCEL')) {
+          str = `${str}VERCEL${foundAgent}`;
         }
       }
     }
@@ -120,10 +192,23 @@ export const cleanTransId = (rawInput) => {
     }
   }
 
-  // 4. Extract standard transaction ID pattern (e.g., 022226-UOOKNZNNVERCEL227 or 081626-OIAC4DXG)
-  const patternMatch = str.match(/(\d{6}-[A-Za-z0-9]+)/);
-  if (patternMatch) {
-    str = patternMatch[1];
+  // Detect Agent ID from raw input if separate (e.g., from hard copy receipt scan: "TRANS: 022226-UOOKNZNN AGENT: 227")
+  const rawAgentMatch = String(rawInput).match(/(?:VERCEL|AGENT)[_\s#:.-]*(\d+)/i);
+  const rawAgentId = rawAgentMatch ? rawAgentMatch[1] : null;
+
+  // 4. Extract standard transaction ID pattern
+  // Matches: 022226-UOOKNZNNVERCEL227, 022226-UOOKNZNN-VERCEL227, 022226-UOOKNZNN_VERCEL227
+  const vercelComboMatch = str.match(/(\d{6}-[A-Za-z0-9]+)[-_:\s]?(VERCEL\d+)/i);
+  if (vercelComboMatch) {
+    str = `${vercelComboMatch[1].toUpperCase()}${vercelComboMatch[2].toUpperCase()}`;
+  } else {
+    const patternMatch = str.match(/(\d{6}-[A-Za-z0-9]+)/);
+    if (patternMatch) {
+      str = patternMatch[1].toUpperCase();
+      if (rawAgentId && !str.includes('VERCEL')) {
+        str = `${str}VERCEL${rawAgentId}`;
+      }
+    }
   }
 
   // Strip quotes and extra symbols, return uppercase
@@ -133,19 +218,22 @@ export const cleanTransId = (rawInput) => {
 /**
  * Extract Agent ID number from VERCEL transaction ID or other formats
  * e.g., '022226-UOOKNZNNVERCEL227' -> '227'
+ *       '022226-UOOKNZNN-VERCEL227' -> '227'
+ *       '022226-UOOKNZNN AGENT 227' -> '227'
+ *       'AGENT: 227' -> '227'
  */
 export const extractAgentFromTransId = (transId) => {
   if (!transId) return null;
   const str = String(transId).trim().toUpperCase();
 
-  // Match VERCEL followed by digits (e.g., VERCEL227 -> 227)
-  const vercelMatch = str.match(/VERCEL(\d+)/i);
+  // Match VERCEL followed by digits (e.g., VERCEL227 -> 227, VERCEL-227 -> 227, VERCEL #227 -> 227, VERCEL: 227 -> 227)
+  const vercelMatch = str.match(/VERCEL[_\s#:.-]*(\d+)/i);
   if (vercelMatch && vercelMatch[1]) {
     return vercelMatch[1];
   }
 
-  // Match AGENT followed by digits (e.g., AGENT227 -> 227)
-  const agentMatch = str.match(/AGENT(\d+)/i);
+  // Match AGENT followed by digits (e.g., AGENT227 -> 227, AGENT #227 -> 227)
+  const agentMatch = str.match(/AGENT[_\s#:.-]*(\d+)/i);
   if (agentMatch && agentMatch[1]) {
     return agentMatch[1];
   }
@@ -164,11 +252,55 @@ export const isVercelTicket = (transId) => {
 /**
  * Get base transaction ID without the VERCEL/Agent suffix
  * e.g., '022226-UOOKNZNNVERCEL227' -> '022226-UOOKNZNN'
+ *       '022226-UOOKNZNN-VERCEL227' -> '022226-UOOKNZNN'
  */
 export const getBaseTransId = (transId) => {
   if (!transId) return '';
   const cleaned = cleanTransId(transId);
-  return cleaned.replace(/VERCEL\d*/i, '');
+  return cleaned.replace(/[-_]?VERCEL\d*/i, '').replace(/[-_]?AGENT\d*/i, '');
+};
+
+/**
+ * Ensure transaction ID includes VERCEL and Agent ID for hard copy / physical receipts
+ * e.g., ('022226-UOOKNZNN', '227') -> '022226-UOOKNZNNVERCEL227'
+ */
+export const formatVercelTransId = (transId, agentId) => {
+  if (!transId) return '';
+  const cleaned = cleanTransId(transId);
+  const extractedAgent = agentId || extractAgentFromTransId(cleaned);
+  if (!extractedAgent) return cleaned;
+  const base = getBaseTransId(cleaned);
+  return `${base}VERCEL${extractedAgent}`;
+};
+
+/**
+ * Format Supervisor / Username Display
+ * Converts usernames (e.g. 'spvr-molly' -> '@spvr-molly') or numeric IDs ('12' -> 'Supervisor #12')
+ * and falls back cleanly without redundant prefixes
+ */
+export const formatSupervisorDisplay = (username, supervisor, agentId) => {
+  let rawName = null;
+
+  if (username && String(username).trim() && String(username) !== 'null' && String(username) !== 'undefined') {
+    rawName = String(username).trim();
+  } else if (supervisor && String(supervisor).trim() && String(supervisor) !== 'null' && String(supervisor) !== 'undefined') {
+    rawName = String(supervisor).trim();
+  }
+
+  if (!rawName) {
+    return agentId ? `Agent POS #${agentId}` : 'UNASSIGNED';
+  }
+
+  if (rawName.startsWith('@')) {
+    return rawName;
+  }
+  if (rawName.startsWith('Supervisor') || rawName.startsWith('Agent')) {
+    return rawName;
+  }
+  if (/^\d+$/.test(rawName)) {
+    return `Supervisor #${rawName}`;
+  }
+  return `@${rawName}`;
 };
 
 /**
@@ -176,5 +308,6 @@ export const getBaseTransId = (transId) => {
  */
 export const getBetTypeLabel = (betCode, rambolito) => {
   if (betCode) return betCode.toUpperCase();
-  return rambolito ? 'RAMBOLITO (RS3)' : 'TARGET (TS3)';
+  if (rambolito === true || rambolito === '1' || rambolito === 1) return 'RAMBOLITO';
+  return 'TARGET';
 };

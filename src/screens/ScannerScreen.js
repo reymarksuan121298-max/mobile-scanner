@@ -10,11 +10,11 @@ import {
   Alert,
   Modal,
   ScrollView,
-  Clipboard,
   Platform,
   PermissionsAndroid,
   Image,
 } from 'react-native';
+import Clipboard from '@react-native-clipboard/clipboard';
 import { Camera } from 'react-native-camera-kit';
 import { COLORS } from '../constants/theme';
 import { ScannerOverlay } from '../components/ScannerOverlay';
@@ -28,9 +28,13 @@ import {
   formatCurrency,
   formatDrawTime,
   getBetTypeLabel,
+  formatClaimDate,
   cleanTransId,
   extractAgentFromTransId,
   isVercelTicket,
+  getBaseTransId,
+  formatVercelTransId,
+  formatSupervisorDisplay,
 } from '../utils/formatters';
 
 export default function ScannerScreen({ navigation }) {
@@ -41,7 +45,7 @@ export default function ScannerScreen({ navigation }) {
   const [isScanning, setIsScanning] = useState(true);
   const [manualModalOpen, setManualModalOpen] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
-  
+
   // Ticket Result Modal State (Instant Pop-up on Scan)
   const [ticketResult, setTicketResult] = useState(null);
   const [confirmClaimModalOpen, setConfirmClaimModalOpen] = useState(false);
@@ -124,10 +128,20 @@ export default function ScannerScreen({ navigation }) {
 
         const agentId = result.agentId || extractAgentFromTransId(result.transactionId) || extractAgentFromTransId(transId);
         const isVercel = result.isVercel || isVercelTicket(result.transactionId) || isVercelTicket(transId);
+        const baseId = getBaseTransId(result.transactionId || transId);
+
+        const enrichedResult = {
+          ...result,
+          transactionId: baseId,
+          baseTransactionId: baseId,
+          scannedTransactionId: transId,
+          agentId: agentId || null,
+          isVercel,
+        };
 
         // Record scan event
         await addClaimRecord({
-          transactionId: result.transactionId,
+          transactionId: baseId,
           winAmount: result.totalWinAmount,
           betNo: result.betNo,
           betCode: result.betCode,
@@ -143,7 +157,7 @@ export default function ScannerScreen({ navigation }) {
             : 'Scanned via QR Terminal',
         });
 
-        setTicketResult(result);
+        setTicketResult(enrichedResult);
         setManualModalOpen(false);
       } catch (err) {
         Alert.alert(
@@ -272,7 +286,7 @@ export default function ScannerScreen({ navigation }) {
             <Text style={styles.brandSubtitle}>QR CLAIM TERMINAL</Text>
           </View>
         </View>
-        
+
         <View style={styles.headerActions}>
           <View style={styles.readyBadge}>
             <View style={styles.pulseDot} />
@@ -387,11 +401,6 @@ export default function ScannerScreen({ navigation }) {
                     <View style={styles.vercelPill}>
                       <Text style={styles.vercelPillText}>⚡ PHYSICAL TICKET (VERCEL)</Text>
                     </View>
-                    {currentAgentId ? (
-                      <View style={styles.agentPill}>
-                        <Text style={styles.agentPillText}>AGENT #{currentAgentId}</Text>
-                      </View>
-                    ) : null}
                   </View>
                 )}
 
@@ -431,46 +440,41 @@ export default function ScannerScreen({ navigation }) {
                     <Text style={styles.combVal}>{ticketResult.betNo || 'N/A'}</Text>
                   </View>
 
-                  {/* Agent ID row if Vercel / Agent detected */}
-                  {currentAgentId && (
-                    <View style={styles.infoRow}>
-                      <Text style={styles.infoLabel}>AGENT ID</Text>
-                      <View style={styles.agentRow}>
-                        <Text style={styles.agentVal}>Agent #{currentAgentId}</Text>
-                        <Text style={styles.vercelTag}>VERCEL POS</Text>
-                      </View>
-                    </View>
-                  )}
-
                   {/* Outlet */}
                   <View style={styles.infoRow}>
-                    <Text style={styles.infoLabel}>OUTLET / TELLER</Text>
-                    <Text style={styles.infoVal}>{ticketResult.fullName || (currentAgentId ? `Agent POS #${currentAgentId}` : 'N/A')}</Text>
+                    <Text style={styles.infoLabel}>TELLER</Text>
+                    <Text style={styles.infoVal}>{ticketResult.fullName || 'N/A'}</Text>
                   </View>
 
                   {/* Supervisor */}
                   <View style={styles.infoRow}>
                     <Text style={styles.infoLabel}>SUPERVISOR</Text>
                     <Text style={styles.infoValBold}>
-                      {ticketResult.username
-                        ? `@${ticketResult.username}`
-                        : ticketResult.supervisor
-                        ? ticketResult.supervisor.startsWith('Supervisor') || ticketResult.supervisor.startsWith('Agent')
-                          ? ticketResult.supervisor
-                          : `Supervisor #${ticketResult.supervisor}`
-                        : currentAgentId
-                        ? `Agent #${currentAgentId}`
-                        : 'UNASSIGNED'}
+                      {formatSupervisorDisplay(
+                        ticketResult.username,
+                        ticketResult.supervisor,
+                        currentAgentId
+                      )}
                     </Text>
                   </View>
 
                   {/* Draw Schedule */}
-                  <View style={[styles.infoRow, { borderBottomWidth: 0 }]}>
+                  <View style={[styles.infoRow, !ticketResult.isClaimed && { borderBottomWidth: 0 }]}>
                     <Text style={styles.infoLabel}>DRAW SCHEDULE</Text>
                     <Text style={styles.infoVal}>
                       {formatDrawTime(ticketResult.drawTime, ticketResult.drawDate)}
                     </Text>
                   </View>
+
+                  {/* Claimed Timestamp */}
+                  {ticketResult.isClaimed && (
+                    <View style={[styles.infoRow, { borderBottomWidth: 0 }]}>
+                      <Text style={styles.infoLabel}>CLAIMED AT</Text>
+                      <Text style={styles.infoValBold}>
+                        {formatClaimDate(ticketResult.claimDate) || 'Processed'}
+                      </Text>
+                    </View>
+                  )}
                 </View>
               </ScrollView>
 

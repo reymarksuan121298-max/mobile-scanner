@@ -5,6 +5,7 @@ import {
   extractAgentFromTransId,
   isVercelTicket,
   getBaseTransId,
+  formatVercelTransId,
 } from '../utils/formatters';
 
 /**
@@ -15,6 +16,51 @@ const getFormattedDate = (dateObj = new Date()) => {
   const month = String(dateObj.getMonth() + 1).padStart(2, '0');
   const day = String(dateObj.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
+};
+
+/**
+ * Helper to extract supervisor from any ticket/receipt object
+ */
+const extractSupervisorFromObject = (...objects) => {
+  for (const obj of objects) {
+    if (!obj || typeof obj !== 'object') continue;
+    const val =
+      obj.supervisor ||
+      obj.supervisor_username ||
+      obj.supervisorUsername ||
+      obj.supervisor_name ||
+      obj.supervisorName ||
+      obj.spvr ||
+      obj.spvr_username ||
+      obj.spvrUsername ||
+      obj.spvr_name ||
+      obj.spvrName ||
+      obj.supervisor_account ||
+      obj.teller_supervisor;
+    if (val && String(val).trim()) {
+      return String(val).trim();
+    }
+  }
+  return null;
+};
+
+/**
+ * Helper to extract username from any ticket/receipt object
+ */
+const extractUsernameFromObject = (...objects) => {
+  for (const obj of objects) {
+    if (!obj || typeof obj !== 'object') continue;
+    const val =
+      obj.username ||
+      obj.user_name ||
+      obj.userName ||
+      obj.teller_username ||
+      obj.created_by_username;
+    if (val && String(val).trim()) {
+      return String(val).trim();
+    }
+  }
+  return null;
 };
 
 /**
@@ -93,88 +139,115 @@ export const claimService = {
         }
       }
 
-      // 2. Fetch receipts from unclaimedReceipts (both isClaim=0 and isClaim=1) for date window
-      const today = new Date();
-      const past60Days = new Date();
-      past60Days.setDate(today.getDate() - 60);
-      const fromDateStr = getFormattedDate(past60Days);
-      const toDateStr = getFormattedDate(today);
+      // 2. Fetch receipts to resolve Supervisor Username and Outlet Metadata
+      const getDateFromTransId = (tId) => {
+        if (!tId) return null;
+        const m = String(tId).match(/^(\d{2})(\d{2})(\d{2})/);
+        if (m) {
+          return `20${m[3]}-${m[1]}-${m[2]}`;
+        }
+        return null;
+      };
 
-      let unclaimedList = [];
-      let claimedList = [];
+      const ticketDate =
+        getDateFromTransId(transId) ||
+        getDateFromTransId(baseTransId) ||
+        (ticketList[0]?.created_at ? ticketList[0].created_at.split(' ')[0] : null) ||
+        getFormattedDate(new Date());
 
+      const todayStr = getFormattedDate(new Date());
+      const datesToFetch = Array.from(new Set([ticketDate, todayStr]));
+
+      let allReceipts = [];
       try {
-        const [unclaimedRes, claimedRes] = await Promise.all([
-          apiClient
-            .get(`${APP_CONFIG.endpoints.unclaimedReceipts}?isClaim=0&from=${fromDateStr}&to=${toDateStr}`)
-            .catch(() => null),
-          apiClient
-            .get(`${APP_CONFIG.endpoints.unclaimedReceipts}?isClaim=1&from=${fromDateStr}&to=${toDateStr}`)
-            .catch(() => null),
-        ]);
-
-        unclaimedList = unclaimedRes?.data?.data?.data || unclaimedRes?.data?.data || unclaimedRes?.data || [];
-        claimedList = claimedRes?.data?.data?.data || claimedRes?.data?.data || claimedRes?.data || [];
-        if (!Array.isArray(unclaimedList)) unclaimedList = [];
-        if (!Array.isArray(claimedList)) claimedList = [];
+        const fetchPromises = [];
+        for (const d of datesToFetch) {
+          fetchPromises.push(
+            apiClient
+              .get(`${APP_CONFIG.endpoints.unclaimedReceipts}?isClaim=0&from=${d}&to=${d}`)
+              .catch(() => null),
+            apiClient
+              .get(`${APP_CONFIG.endpoints.unclaimedReceipts}?isClaim=1&from=${d}&to=${d}`)
+              .catch(() => null)
+          );
+        }
+        const responses = await Promise.all(fetchPromises);
+        for (const res of responses) {
+          const list = res?.data?.data?.data || res?.data?.data || res?.data || [];
+          if (Array.isArray(list)) {
+            allReceipts.push(...list);
+          }
+        }
       } catch (receiptFetchErr) {
         console.log('Receipts list fetch error (non-fatal):', receiptFetchErr);
       }
 
-      // Check if ticket was found in claimedList (isClaim=1)
-      const matchedClaimedReceipt = claimedList.find((item) => {
-        const itemTransId = String(item.transactionId || item.transId || '').trim().toLowerCase();
-        return (
-          itemTransId === transId.toLowerCase() ||
-          (baseTransId && itemTransId === baseTransId.toLowerCase())
-        );
-      });
+      // Check if ticket was found in allReceipts (by transId, or by tellerId/agentId, or by fullName)
+      const matchedReceipt =
+        allReceipts.find((item) => {
+          const itemTransId = String(item.transactionId || item.transId || '').trim().toLowerCase();
+          return (
+            itemTransId === transId.toLowerCase() ||
+            (baseTransId && itemTransId === baseTransId.toLowerCase())
+          );
+        }) ||
+        (agentId
+          ? allReceipts.find((item) => Number(item.tellerId || item.agentId || item.agent) === Number(agentId) && item.username)
+          : null) ||
+        (ticketList[0]?.fullName
+          ? allReceipts.find((item) => String(item.fullName || item.outlet || '').toLowerCase().trim() === String(ticketList[0].fullName).toLowerCase().trim() && item.username)
+          : null);
 
-      // Check if ticket was found in unclaimedList (isClaim=0)
-      const matchedUnclaimedReceipt = unclaimedList.find((item) => {
-        const itemTransId = String(item.transactionId || item.transId || '').trim().toLowerCase();
-        return (
-          itemTransId === transId.toLowerCase() ||
-          (baseTransId && itemTransId === baseTransId.toLowerCase())
-        );
-      });
+      const isFromClaimedReceipt = Boolean(matchedReceipt && Number(matchedReceipt.isClaim) === 1);
 
-      // If claimLookup did not return any tickets, but receipt exists in claimedList or unclaimedList, reconstruct ticket
-      if (!ticketList.length && (matchedClaimedReceipt || matchedUnclaimedReceipt)) {
-        const matchedItem = matchedClaimedReceipt || matchedUnclaimedReceipt;
-        const isFromClaimedList = Boolean(matchedClaimedReceipt);
+      // If claimLookup did not return any tickets, but receipt exists in allReceipts, reconstruct ticket
+      if (!ticketList.length && matchedReceipt) {
+        const resolvedAgentId =
+          agentId ||
+          matchedReceipt.agentId ||
+          (matchedReceipt.tellerId ? String(matchedReceipt.tellerId) : null) ||
+          extractAgentFromTransId(matchedReceipt.transactionId || matchedReceipt.transId) ||
+          null;
+        const resolvedIsVercel =
+          isVercel ||
+          Boolean(resolvedAgentId) ||
+          isVercelTicket(matchedReceipt.transactionId || matchedReceipt.transId);
+
+        const base = baseTransId || getBaseTransId(matchedReceipt.transactionId || matchedReceipt.transId || transId);
+        const resolvedSupervisor = extractSupervisorFromObject(matchedReceipt);
+        const resolvedUsername = extractUsernameFromObject(matchedReceipt) || resolvedSupervisor;
 
         return {
           found: true,
-          transactionId: matchedItem.transactionId || matchedItem.transId || transId,
+          transactionId: base,
           scannedTransactionId: transId,
-          baseTransactionId: baseTransId,
-          activeLookupId: matchedItem.transactionId || baseTransId || transId,
-          agentId: agentId || matchedItem.agentId || null,
-          isVercel: isVercel || Boolean(agentId),
-          primaryTicket: matchedItem,
-          allCombinations: [matchedItem],
-          totalWinAmount: parseFloat(matchedItem.winAmount || matchedItem.win_amount || 0),
-          totalBetAmount: parseFloat(matchedItem.betAmount || matchedItem.amount || 0),
-          isClaimed: isFromClaimedList || Number(matchedItem.isClaim) === 1 || Number(matchedItem.is_claim) === 1,
-          isVoid: Number(matchedItem.isVoid) === 1 || Number(matchedItem.is_void) === 1,
-          drawTime: matchedItem.drawTime || matchedItem.draw_time,
-          drawDate: matchedItem.drawDate || matchedItem.draw_date || matchedItem.created_at,
-          fullName: matchedItem.fullName || matchedItem.outlet || (agentId ? `Agent POS #${agentId}` : 'N/A'),
-          username: matchedItem.username || null,
-          supervisor: matchedItem.supervisor || (agentId ? `Agent #${agentId}` : null),
-          betNo: matchedItem.betNo || matchedItem.bet_no,
-          betCode: matchedItem.betCode || matchedItem.bet_code,
-          rambolito: matchedItem.rambolito,
-          claimDate: matchedItem.claimDate || matchedItem.claim_date || (isFromClaimedList ? (matchedItem.updated_at || new Date().toISOString()) : null),
-          message: isFromClaimedList ? 'Ticket located (Already Claimed).' : 'Ticket located successfully.',
+          baseTransactionId: base,
+          activeLookupId: matchedReceipt.transactionId || base || transId,
+          agentId: resolvedAgentId,
+          isVercel: resolvedIsVercel,
+          primaryTicket: matchedReceipt,
+          allCombinations: [matchedReceipt],
+          totalWinAmount: parseFloat(matchedReceipt.winAmount || matchedReceipt.win_amount || 0),
+          totalBetAmount: parseFloat(matchedReceipt.betAmount || matchedReceipt.amount || 0),
+          isClaimed: isFromClaimedReceipt || Number(matchedReceipt.isClaim) === 1 || Number(matchedReceipt.is_claim) === 1,
+          isVoid: Number(matchedReceipt.isVoid) === 1 || Number(matchedReceipt.is_void) === 1,
+          drawTime: matchedReceipt.drawTime || matchedReceipt.draw_time,
+          drawDate: matchedReceipt.drawDate || matchedReceipt.draw_date || matchedReceipt.created_at,
+          fullName: matchedReceipt.fullName || matchedReceipt.outlet || (resolvedAgentId ? `Agent POS #${resolvedAgentId}` : 'N/A'),
+          username: resolvedUsername,
+          supervisor: resolvedSupervisor || resolvedUsername,
+          betNo: matchedReceipt.betNo || matchedReceipt.bet_no,
+          betCode: matchedReceipt.betCode || matchedReceipt.bet_code,
+          rambolito: matchedReceipt.rambolito,
+          claimDate: matchedReceipt.claimDate || matchedReceipt.claim_date || (isFromClaimedReceipt ? (matchedReceipt.updated_at || new Date().toISOString()) : null),
+          message: isFromClaimedReceipt ? 'Ticket located (Already Claimed).' : 'Ticket located successfully.',
         };
       }
 
       if (!ticketList.length) {
         return {
           found: false,
-          transactionId: transId,
+          transactionId: baseTransId || transId,
           baseTransactionId: baseTransId,
           agentId: agentId || null,
           isVercel: isVercel,
@@ -189,7 +262,7 @@ export const claimService = {
       const totalBetAmount = ticketList.reduce((sum, item) => sum + parseFloat(item.betAmount || item.amount || 0), 0);
       
       const isAlreadyClaimed =
-        Boolean(matchedClaimedReceipt) ||
+        isFromClaimedReceipt ||
         ticketList.some(
           (item) =>
             Number(item.isClaim) === 1 ||
@@ -213,25 +286,52 @@ export const claimService = {
           String(item.status || '').toUpperCase() === 'VOIDED'
       );
 
-      // Resolve Supervisor / Username
-      let resolvedUsername = primaryTicket.username || matchedClaimedReceipt?.username || matchedUnclaimedReceipt?.username || null;
-      let resolvedSupervisor = primaryTicket.supervisor || matchedClaimedReceipt?.supervisor || matchedUnclaimedReceipt?.supervisor || (agentId ? `Agent #${agentId}` : null);
+      // Resolve Supervisor / Username / Agent
+      const resolvedAgentId =
+        agentId ||
+        primaryTicket.agentId ||
+        matchedReceipt?.agentId ||
+        (matchedReceipt?.tellerId ? String(matchedReceipt.tellerId) : null) ||
+        extractAgentFromTransId(primaryTicket.transactionId) ||
+        null;
+      const resolvedIsVercel =
+        isVercel ||
+        Boolean(resolvedAgentId) ||
+        isVercelTicket(primaryTicket.transactionId) ||
+        Boolean(primaryTicket.isVercel);
+
+      let resolvedSupervisor = extractSupervisorFromObject(
+        primaryTicket,
+        payload,
+        payload?.data,
+        payload?.ticket,
+        matchedReceipt
+      );
+      let resolvedUsername = extractUsernameFromObject(
+        primaryTicket,
+        payload,
+        payload?.data,
+        payload?.ticket,
+        matchedReceipt
+      ) || resolvedSupervisor;
 
       const resolvedClaimDate =
         primaryTicket.claimDate ||
         primaryTicket.claim_date ||
-        matchedClaimedReceipt?.claimDate ||
-        matchedClaimedReceipt?.claim_date ||
-        (isAlreadyClaimed ? (matchedClaimedReceipt?.updated_at || new Date().toISOString()) : null);
+        matchedReceipt?.claimDate ||
+        matchedReceipt?.claim_date ||
+        (isAlreadyClaimed ? (matchedReceipt?.updated_at || new Date().toISOString()) : null);
+
+      const base = baseTransId || getBaseTransId(primaryTicket.transactionId || transId);
 
       return {
         found: true,
-        transactionId: primaryTicket.transactionId || transId,
+        transactionId: base,
         scannedTransactionId: transId,
-        baseTransactionId: baseTransId,
+        baseTransactionId: base,
         activeLookupId,
-        agentId: agentId || primaryTicket.agentId || null,
-        isVercel: isVercel || Boolean(agentId),
+        agentId: resolvedAgentId,
+        isVercel: resolvedIsVercel,
         primaryTicket,
         allCombinations: ticketList,
         totalWinAmount,
@@ -240,9 +340,9 @@ export const claimService = {
         isVoid: isVoided,
         drawTime: primaryTicket.drawTime,
         drawDate: primaryTicket.drawDate || primaryTicket.created_at,
-        fullName: primaryTicket.fullName || primaryTicket.outlet || (agentId ? `Agent POS #${agentId}` : 'N/A'),
+        fullName: primaryTicket.fullName || matchedReceipt?.fullName || matchedReceipt?.outlet || (resolvedAgentId ? `Agent POS #${resolvedAgentId}` : 'N/A'),
         username: resolvedUsername,
-        supervisor: resolvedSupervisor,
+        supervisor: resolvedSupervisor || resolvedUsername,
         betNo: primaryTicket.betNo,
         betCode: primaryTicket.betCode,
         rambolito: primaryTicket.rambolito,

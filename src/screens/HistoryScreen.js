@@ -15,6 +15,7 @@ import {
   formatCurrency,
   formatDrawTime,
   formatDate,
+  formatClaimDate,
   extractAgentFromTransId,
   isVercelTicket,
 } from '../utils/formatters';
@@ -110,14 +111,12 @@ export default function HistoryScreen({ navigation }) {
 
             {itemIsVercel && (
               <View style={styles.historyVercelPill}>
-                <Text style={styles.historyVercelText}>
-                  {itemAgentId ? `VERCEL #${itemAgentId}` : 'VERCEL'}
-                </Text>
+                <Text style={styles.historyVercelText}>VERCEL</Text>
               </View>
             )}
           </View>
           <Text style={styles.timestampText}>
-            {formatDate(item.timestamp) || 'Recent'}
+            {formatClaimDate(item.timestamp) || 'Recent'}
           </Text>
         </View>
 
@@ -125,7 +124,7 @@ export default function HistoryScreen({ navigation }) {
 
         <View style={styles.cardDetails}>
           <Text style={styles.detailText}>
-            Outlet: <Text style={styles.detailBold}>{item.fullName || (itemAgentId ? `Agent #${itemAgentId}` : 'N/A')}</Text>
+            Outlet: <Text style={styles.detailBold}>{item.fullName || 'N/A'}</Text>
           </Text>
           <Text style={styles.detailText}>
             Comb: <Text style={styles.detailBold}>{item.betNo || 'N/A'} ({item.betCode || 'RS3'})</Text>

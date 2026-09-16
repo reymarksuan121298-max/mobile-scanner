@@ -1,12 +1,5 @@
 export const SERVER_PRESETS = [
   {
-    id: 'stl-ldn',
-    name: 'STL LDN',
-    description: 'Lanao del Norte Operations',
-    baseUrl: 'https://stl-ldn-api.com',
-    token: 'Bearer 66338|o1q9x0mgbaggRwxR4yub7WIhSKMzW49aXVtgHmNy',
-  },
-  {
     id: 'stl-mandaue',
     name: 'STL Mandaue',
     description: 'Mandaue City Operations',
@@ -16,7 +9,7 @@ export const SERVER_PRESETS = [
 ];
 
 export const APP_CONFIG = {
-  appName: 'STL QR Scanner Terminal',
+  appName: 'STL Mandaue Scanner Terminal',
   version: '1.0.2',
   buildNumber: '100',
 

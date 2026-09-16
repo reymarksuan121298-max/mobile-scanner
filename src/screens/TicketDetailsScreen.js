@@ -7,8 +7,8 @@ import {
   TouchableOpacity,
   SafeAreaView,
   Alert,
-  Clipboard,
 } from 'react-native';
+import Clipboard from '@react-native-clipboard/clipboard';
 import { COLORS } from '../constants/theme';
 import { StatusBadge } from '../components/StatusBadge';
 import { ClaimConfirmModal } from '../components/ClaimConfirmModal';
@@ -17,8 +17,12 @@ import {
   formatDrawTime,
   getBetTypeLabel,
   formatDate,
+  formatClaimDate,
   extractAgentFromTransId,
   isVercelTicket,
+  getBaseTransId,
+  formatVercelTransId,
+  formatSupervisorDisplay,
 } from '../utils/formatters';
 import { claimService } from '../services/claimService';
 import { useApp } from '../context/AppContext';
@@ -69,9 +73,10 @@ export default function TicketDetailsScreen({ navigation, route }) {
 
   const agentId = ticketAgentId || extractAgentFromTransId(transactionId);
   const isVercel = ticketIsVercel || isVercelTicket(transactionId);
+  const baseId = getBaseTransId(transactionId);
 
   const handleCopyTransId = () => {
-    Clipboard.setString(transactionId);
+    Clipboard.setString(baseId);
     setCopied(true);
     showToast('Transaction ID copied to clipboard!', 'info');
     setTimeout(() => setCopied(false), 2000);
@@ -80,12 +85,13 @@ export default function TicketDetailsScreen({ navigation, route }) {
   const handleExecuteClaim = async () => {
     setIsProcessingClaim(true);
     try {
-      const result = await claimService.executeClaim(transactionId);
+      const result = await claimService.executeClaim(baseId);
       triggerScanFeedback('claimSuccess');
 
       // Update local state to reflect claimed status
       const updatedTicket = {
         ...activeTicket,
+        transactionId: baseId,
         isClaimed: true,
         claimDate: result.timestamp || new Date().toISOString(),
       };
@@ -93,7 +99,7 @@ export default function TicketDetailsScreen({ navigation, route }) {
 
       // Record in audit ledger
       await addClaimRecord({
-        transactionId,
+        transactionId: baseId,
         winAmount: totalWinAmount,
         betNo,
         betCode,
@@ -114,7 +120,7 @@ export default function TicketDetailsScreen({ navigation, route }) {
 
       Alert.alert(
         'Claim Successful',
-        `Transaction ${transactionId} has been marked as CLAIMED in the central ledger.\n\nPayout Amount: ${formatCurrency(totalWinAmount)}`,
+        `Transaction ${baseId} has been marked as CLAIMED in the central ledger.\n\nPayout Amount: ${formatCurrency(totalWinAmount)}`,
         [
           {
             text: 'Scan Next Ticket',
@@ -173,11 +179,6 @@ export default function TicketDetailsScreen({ navigation, route }) {
             <View style={styles.vercelPill}>
               <Text style={styles.vercelPillText}>⚡ PHYSICAL TICKET (VERCEL)</Text>
             </View>
-            {agentId ? (
-              <View style={styles.agentPill}>
-                <Text style={styles.agentPillText}>AGENT #{agentId}</Text>
-              </View>
-            ) : null}
           </View>
         )}
 
@@ -199,25 +200,15 @@ export default function TicketDetailsScreen({ navigation, route }) {
         <View style={styles.detailsCard}>
           <Text style={styles.sectionHeading}>TICKET SPECIFICATIONS</Text>
 
-          {agentId && (
-            <View style={styles.detailRow}>
-              <Text style={styles.detailLabel}>AGENT POS / SOURCE</Text>
-              <View style={styles.agentRow}>
-                <Text style={styles.agentVal}>Agent #{agentId}</Text>
-                <Text style={styles.vercelTag}>VERCEL</Text>
-              </View>
-            </View>
-          )}
-
           <View style={styles.detailRow}>
             <Text style={styles.detailLabel}>OUTLET / FULL NAME</Text>
-            <Text style={styles.detailValue}>{fullName || (agentId ? `Agent POS #${agentId}` : 'N/A')}</Text>
+            <Text style={styles.detailValue}>{fullName || 'N/A'}</Text>
           </View>
 
           <View style={styles.detailRow}>
             <Text style={styles.detailLabel}>SUPERVISOR ACCOUNT</Text>
             <Text style={styles.detailValueBold}>
-              {username ? `@${username}` : (supervisor ? (supervisor.startsWith('Supervisor') || supervisor.startsWith('Agent') ? supervisor : `Supervisor #${supervisor}`) : (agentId ? `Agent #${agentId}` : 'N/A'))}
+              {formatSupervisorDisplay(username, supervisor, agentId)}
             </Text>
           </View>
 
@@ -234,7 +225,7 @@ export default function TicketDetailsScreen({ navigation, route }) {
           {isClaimed && (
             <View style={[styles.detailRow, styles.claimHighlightRow]}>
               <Text style={styles.claimHighlightLabel}>CLAIMED TIMESTAMP</Text>
-              <Text style={styles.claimHighlightValue}>{formatDate(claimDate) || 'Processed'}</Text>
+              <Text style={styles.claimHighlightValue}>{formatClaimDate(claimDate) || 'Processed'}</Text>
             </View>
           )}
         </View>
