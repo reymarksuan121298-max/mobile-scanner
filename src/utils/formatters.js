@@ -45,27 +45,18 @@ export const formatDrawTime = (timeStr, drawDate) => {
 };
 
 /**
- * Format standard Date YYYY-MM-DD to readable format
+ * Format standard Date to all-numbers format YYYY-MM-DD (e.g. 2026-09-17)
+ * Eliminates month names (Sep, Oct, etc.) across the entire app
  */
 export const formatDate = (dateVal) => {
-  if (!dateVal) return null;
+  if (!dateVal || dateVal === 'null' || dateVal === 'undefined' || dateVal === 'N/A') return null;
   try {
-    if (typeof dateVal === 'string' && dateVal.includes('-')) {
-      const parts = dateVal.split('T')[0].split(' ')[0].split('-');
-      if (parts.length === 3) {
-        const d = new Date(parts[0], parts[1] - 1, parts[2]);
-        if (!isNaN(d.getTime())) {
-          return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-        }
-      }
-      return dateVal.split('T')[0].split(' ')[0];
-    }
-    const d = new Date(dateVal);
-    if (!isNaN(d.getTime())) {
-      return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    const formatted = formatClaimDate(dateVal);
+    if (formatted) {
+      return formatted.split(' ')[0];
     }
   } catch {
-    return String(dateVal);
+    // fallback
   }
   return String(dateVal);
 };

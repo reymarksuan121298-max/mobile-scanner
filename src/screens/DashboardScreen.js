@@ -12,7 +12,7 @@ import {
 } from 'react-native';
 import { COLORS } from '../constants/theme';
 import { claimService } from '../services/claimService';
-import { formatCurrency, formatDrawTime } from '../utils/formatters';
+import { formatCurrency, formatDrawTime, formatDate, formatClaimDate } from '../utils/formatters';
 import { useApp } from '../context/AppContext';
 
 export default function DashboardScreen({ navigation }) {
@@ -53,7 +53,8 @@ export default function DashboardScreen({ navigation }) {
       fullName: ticket.fullName || ticket.outlet,
       username: ticket.username,
       drawTime: ticket.drawTime,
-      drawDate: ticket.drawDate,
+      drawDate: formatDate(ticket.drawDate || ticket.draw_date || ticket.created_at),
+      claimDate: formatClaimDate(ticket.claimDate || ticket.claim_date || ticket.claimedDate || ticket.claimed_date),
       isClaimed: Number(ticket.isClaim) === 1,
       isVoid: Number(ticket.isVoid) === 1,
     });

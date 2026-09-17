@@ -7,6 +7,7 @@ import {
   getBaseTransId,
   formatVercelTransId,
   formatClaimDate,
+  formatDate,
 } from '../utils/formatters';
 
 /**
@@ -233,7 +234,7 @@ export const claimService = {
           isClaimed: isFromClaimedReceipt || Number(matchedReceipt.isClaim) === 1 || Number(matchedReceipt.is_claim) === 1,
           isVoid: Number(matchedReceipt.isVoid) === 1 || Number(matchedReceipt.is_void) === 1,
           drawTime: matchedReceipt.drawTime || matchedReceipt.draw_time,
-          drawDate: matchedReceipt.drawDate || matchedReceipt.draw_date || matchedReceipt.created_at,
+          drawDate: formatDate(matchedReceipt.drawDate || matchedReceipt.draw_date || matchedReceipt.created_at),
           fullName: matchedReceipt.fullName || matchedReceipt.outlet || (resolvedAgentId ? `Agent POS #${resolvedAgentId}` : 'N/A'),
           username: resolvedUsername,
           supervisor: resolvedSupervisor || resolvedUsername,
@@ -357,7 +358,7 @@ export const claimService = {
         isClaimed: isAlreadyClaimed,
         isVoid: isVoided,
         drawTime: primaryTicket.drawTime,
-        drawDate: primaryTicket.drawDate || primaryTicket.created_at,
+        drawDate: formatDate(primaryTicket.drawDate || primaryTicket.created_at),
         fullName: primaryTicket.fullName || matchedReceipt?.fullName || matchedReceipt?.outlet || (resolvedAgentId ? `Agent POS #${resolvedAgentId}` : 'N/A'),
         username: resolvedUsername,
         supervisor: resolvedSupervisor || resolvedUsername,
