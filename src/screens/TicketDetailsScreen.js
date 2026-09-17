@@ -88,12 +88,14 @@ export default function TicketDetailsScreen({ navigation, route }) {
       const result = await claimService.executeClaim(baseId);
       triggerScanFeedback('claimSuccess');
 
+      const formattedClaimDateVal = result.claimDate || formatClaimDate(result.timestamp || new Date());
+
       // Update local state to reflect claimed status
       const updatedTicket = {
         ...activeTicket,
         transactionId: baseId,
         isClaimed: true,
-        claimDate: result.timestamp || new Date().toISOString(),
+        claimDate: formattedClaimDateVal,
       };
       setActiveTicket(updatedTicket);
 
@@ -110,6 +112,8 @@ export default function TicketDetailsScreen({ navigation, route }) {
         agentId: agentId || null,
         isVercel,
         status: 'CLAIMED',
+        claimDate: formattedClaimDateVal,
+        timestamp: formattedClaimDateVal,
         notes: isVercel
           ? `Claim executed for Physical Vercel Ticket (Agent #${agentId || 'N/A'})`
           : 'Claim executed successfully via API',

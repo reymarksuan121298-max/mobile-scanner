@@ -108,4 +108,56 @@ describe('claimService Ticket Verification & Claim Status', () => {
     expect(result.totalWinAmount).toBe(833);
     expect(result.betNo).toBe('304');
   });
+
+  test('normalizes month-abbreviated claim dates from cloud database to all numbers format', async () => {
+    apiClient.get.mockImplementation((url) => {
+      if (url.includes('/api/accountant/claim/090226-TEST1234')) {
+        return Promise.resolve({
+          data: {
+            message: 'Bet data!',
+            data: [
+              {
+                transactionId: '090226-TEST1234',
+                betNo: '123',
+                betAmount: 50,
+                winAmount: 25000,
+                betCode: 'TS3',
+                isClaim: 1,
+                claimDate: 'Sep-02-26 13:56',
+                fullName: 'Outlet 1',
+                created_at: '2026-09-02 10:00:00',
+              },
+            ],
+          },
+        });
+      }
+      return Promise.resolve({ data: { data: [] } });
+    });
+
+    const result = await claimService.lookupTicket('090226-TEST1234');
+    expect(result.found).toBe(true);
+    expect(result.isClaimed).toBe(true);
+    expect(result.claimDate).toBe('2026-09-02 13:56');
+  });
+
+  test('executeClaim sends all-numbers formatted claimDate in cloud API payload', async () => {
+    let capturedPayload = null;
+    apiClient.put.mockImplementation((url, payload) => {
+      capturedPayload = payload;
+      return Promise.resolve({
+        data: {
+          success: true,
+          message: 'Bet claimed successfully.',
+        },
+      });
+    });
+
+    const res = await claimService.executeClaim('091726-TESTABCD');
+    expect(res.success).toBe(true);
+    expect(capturedPayload).toBeTruthy();
+    expect(capturedPayload.isClaim).toBe(1);
+    expect(capturedPayload.claimDate).toMatch(/^\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}$/);
+    expect(capturedPayload.claim_date).toMatch(/^\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}$/);
+    expect(res.claimDate).toMatch(/^\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}$/);
+  });
 });

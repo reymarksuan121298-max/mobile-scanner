@@ -6,6 +6,7 @@ import {
   isVercelTicket,
   getBaseTransId,
   formatVercelTransId,
+  formatClaimDate,
 } from '../utils/formatters';
 
 /**
@@ -210,6 +211,13 @@ export const claimService = {
         const resolvedSupervisor = extractSupervisorFromObject(matchedReceipt);
         const resolvedUsername = extractUsernameFromObject(matchedReceipt) || resolvedSupervisor;
 
+        const rawReceiptClaimDate =
+          matchedReceipt.claimDate ||
+          matchedReceipt.claim_date ||
+          matchedReceipt.claimedDate ||
+          matchedReceipt.claimed_date ||
+          (isFromClaimedReceipt ? (matchedReceipt.updated_at || new Date().toISOString()) : null);
+
         return {
           found: true,
           transactionId: base,
@@ -232,7 +240,7 @@ export const claimService = {
           betNo: matchedReceipt.betNo || matchedReceipt.bet_no,
           betCode: matchedReceipt.betCode || matchedReceipt.bet_code,
           rambolito: matchedReceipt.rambolito,
-          claimDate: matchedReceipt.claimDate || matchedReceipt.claim_date || (isFromClaimedReceipt ? (matchedReceipt.updated_at || new Date().toISOString()) : null),
+          claimDate: rawReceiptClaimDate ? formatClaimDate(rawReceiptClaimDate) : null,
           message: isFromClaimedReceipt ? 'Ticket located (Already Claimed).' : 'Ticket located successfully.',
         };
       }
@@ -319,12 +327,18 @@ export const claimService = {
           tellerInfo
         ) || resolvedSupervisor;
 
-      const resolvedClaimDate =
+      const rawClaimDate =
         primaryTicket.claimDate ||
         primaryTicket.claim_date ||
+        primaryTicket.claimedDate ||
+        primaryTicket.claimed_date ||
         matchedReceipt?.claimDate ||
         matchedReceipt?.claim_date ||
+        matchedReceipt?.claimedDate ||
+        matchedReceipt?.claimed_date ||
         (isAlreadyClaimed ? (matchedReceipt?.updated_at || new Date().toISOString()) : null);
+
+      const resolvedClaimDate = rawClaimDate ? formatClaimDate(rawClaimDate) : null;
 
       const base = baseTransId || getBaseTransId(primaryTicket.transactionId || transId);
 
@@ -370,21 +384,30 @@ export const claimService = {
     }
 
     const baseTransId = getBaseTransId(transId);
+    const formattedClaimDate = formatClaimDate(new Date());
 
     try {
       let response;
       let executedId = transId;
 
+      const claimPayload = {
+        isClaim: 1,
+        claimDate: formattedClaimDate,
+        claim_date: formattedClaimDate,
+        claimedDate: formattedClaimDate,
+        claimed_date: formattedClaimDate,
+      };
+
       try {
         response = await apiClient.put(
           `${APP_CONFIG.endpoints.claimExecute}/${encodeURIComponent(transId)}`,
-          { isClaim: 1 }
+          claimPayload
         );
       } catch (putErr) {
         if (baseTransId && baseTransId !== transId) {
           response = await apiClient.put(
             `${APP_CONFIG.endpoints.claimExecute}/${encodeURIComponent(baseTransId)}`,
-            { isClaim: 1 }
+            claimPayload
           );
           executedId = baseTransId;
         } else {
@@ -397,7 +420,8 @@ export const claimService = {
         transactionId: executedId,
         scannedTransactionId: transId,
         message: response.data?.message || 'Bet successfully claimed and recorded.',
-        timestamp: new Date().toISOString(),
+        timestamp: formattedClaimDate,
+        claimDate: formattedClaimDate,
         raw: response.data,
       };
     } catch (error) {

@@ -96,3 +96,36 @@ describe('Supervisor / Username Formatting', () => {
   });
 });
 
+describe('Claim Date Formatting (Uniform All-Numbers Format)', () => {
+  test('formats month-abbreviation dates like Sep-02-26 13:56 to uniform numbers format', () => {
+    expect(formatClaimDate('Sep-02-26 13:56')).toBe('2026-09-02 13:56');
+    expect(formatClaimDate('Sep-04-26 14:44')).toBe('2026-09-04 14:44');
+    expect(formatClaimDate('Jan-15-26 09:30')).toBe('2026-01-15 09:30');
+    expect(formatClaimDate('Dec-31-26 23:59')).toBe('2026-12-31 23:59');
+  });
+
+  test('formats 4-digit year month-abbreviation dates', () => {
+    expect(formatClaimDate('Sep-02-2026 13:56')).toBe('2026-09-02 13:56');
+    expect(formatClaimDate('02-Sep-2026 13:56')).toBe('2026-09-02 13:56');
+    expect(formatClaimDate('Sep 02, 2026 13:56')).toBe('2026-09-02 13:56');
+  });
+
+  test('preserves already formatted YYYY-MM-DD HH:mm dates', () => {
+    expect(formatClaimDate('2026-09-01 17:38')).toBe('2026-09-01 17:38');
+    expect(formatClaimDate('2026-09-01 14:52')).toBe('2026-09-01 14:52');
+  });
+
+  test('formats YYYY-MM-DD HH:mm:ss to YYYY-MM-DD HH:mm', () => {
+    expect(formatClaimDate('2026-09-01 17:38:45')).toBe('2026-09-01 17:38');
+    expect(formatClaimDate('2026-09-01T17:38:45.000Z')).toBe('2026-09-01 17:38');
+  });
+
+  test('handles null, undefined, empty, and invalid inputs gracefully', () => {
+    expect(formatClaimDate(null)).toBe('');
+    expect(formatClaimDate(undefined)).toBe('');
+    expect(formatClaimDate('')).toBe('');
+    expect(formatClaimDate('null')).toBe('');
+    expect(formatClaimDate('N/A')).toBe('');
+  });
+});
+

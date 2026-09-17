@@ -70,36 +70,41 @@ export const formatDate = (dateVal) => {
   return String(dateVal);
 };
 
+const MONTH_MAP = {
+  jan: '01', january: '01',
+  feb: '02', february: '02',
+  mar: '03', march: '03',
+  apr: '04', april: '04',
+  may: '05',
+  jun: '06', june: '06',
+  jul: '07', july: '07',
+  aug: '08', august: '08',
+  sep: '09', sept: '09', september: '09',
+  oct: '10', october: '10',
+  nov: '11', november: '11',
+  dec: '12', december: '12',
+};
+
 /**
- * Format Claim Date to 'YYYY-MM-DD HH:mm' (e.g. 2026-09-02 11:34)
+ * Format Claim Date to all-numbers format 'YYYY-MM-DD HH:mm' (e.g. 2026-09-02 13:56)
+ * Handles ISO dates, Date objects, timestamps, standard dates, and month-name formats (e.g. Sep-02-26 13:56)
  */
 export const formatClaimDate = (dateVal) => {
-  if (!dateVal) return '';
+  if (!dateVal || dateVal === 'null' || dateVal === 'undefined') return '';
   try {
-    let d;
     if (dateVal instanceof Date) {
-      d = dateVal;
-    } else if (typeof dateVal === 'number') {
-      d = new Date(dateVal);
-    } else if (typeof dateVal === 'string') {
-      const trimmed = dateVal.trim();
-      if (!trimmed) return '';
-      // If already in exact YYYY-MM-DD HH:mm format
-      if (/^\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}$/.test(trimmed)) {
-        return trimmed;
-      }
-      const normalizedStr = trimmed.includes(' ') && !trimmed.includes('T') ? trimmed.replace(' ', 'T') : trimmed;
-      const parsed = new Date(normalizedStr);
-      if (!isNaN(parsed.getTime())) {
-        d = parsed;
-      } else {
-        d = new Date(trimmed);
-      }
-    } else {
-      d = new Date(dateVal);
+      if (isNaN(dateVal.getTime())) return '';
+      const year = dateVal.getFullYear();
+      const month = String(dateVal.getMonth() + 1).padStart(2, '0');
+      const day = String(dateVal.getDate()).padStart(2, '0');
+      const hours = String(dateVal.getHours()).padStart(2, '0');
+      const minutes = String(dateVal.getMinutes()).padStart(2, '0');
+      return `${year}-${month}-${day} ${hours}:${minutes}`;
     }
 
-    if (d && !isNaN(d.getTime())) {
+    if (typeof dateVal === 'number') {
+      const d = new Date(dateVal);
+      if (isNaN(d.getTime())) return '';
       const year = d.getFullYear();
       const month = String(d.getMonth() + 1).padStart(2, '0');
       const day = String(d.getDate()).padStart(2, '0');
@@ -109,17 +114,107 @@ export const formatClaimDate = (dateVal) => {
     }
 
     if (typeof dateVal === 'string') {
-      const match = dateVal.match(/(\d{4})-(\d{1,2})-(\d{1,2})[T\s](\d{1,2}):(\d{1,2})/);
-      if (match) {
-        const y = match[1];
-        const m = match[2].padStart(2, '0');
-        const day = match[3].padStart(2, '0');
-        const h = match[4].padStart(2, '0');
-        const min = match[5].padStart(2, '0');
-        return `${y}-${m}-${day} ${h}:${min}`;
+      const trimmed = dateVal.trim();
+      if (!trimmed || trimmed === 'null' || trimmed === 'undefined' || trimmed === 'N/A') return '';
+
+      // 1. Exact match: YYYY-MM-DD HH:mm
+      if (/^\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}$/.test(trimmed)) {
+        return trimmed;
+      }
+
+      // 2. Exact match: YYYY-MM-DD HH:mm:ss
+      const ymdhmsMatch = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})[T\s](\d{2}):(\d{2})/);
+      if (ymdhmsMatch) {
+        return `${ymdhmsMatch[1]}-${ymdhmsMatch[2]}-${ymdhmsMatch[3]} ${ymdhmsMatch[4]}:${ymdhmsMatch[5]}`;
+      }
+
+      // 3. Month Name First: e.g., 'Sep-02-26 13:56', 'Sep-04-26 14:44', 'Sep 02, 2026 13:56', 'September 2, 2026 1:56 PM'
+      const monthFirstMatch = trimmed.match(/^([A-Za-z]+)[-\s/]+(\d{1,2})[-\s/,]+(\d{2,4})(?:[T\s]+(\d{1,2}):(\d{1,2})(?::\d{1,2})?(?:\s*(AM|PM))?)?/i);
+      if (monthFirstMatch) {
+        const monthKey = monthFirstMatch[1].toLowerCase();
+        const monthNum = MONTH_MAP[monthKey];
+        if (monthNum) {
+          const dayNum = monthFirstMatch[2].padStart(2, '0');
+          let rawYear = monthFirstMatch[3];
+          if (rawYear.length === 2) {
+            rawYear = `20${rawYear}`;
+          }
+          let hourStr = monthFirstMatch[4] || '00';
+          let minStr = monthFirstMatch[5] || '00';
+          const ampm = monthFirstMatch[6];
+
+          if (ampm) {
+            let h = parseInt(hourStr, 10);
+            if (ampm.toUpperCase() === 'PM' && h < 12) h += 12;
+            if (ampm.toUpperCase() === 'AM' && h === 12) h = 0;
+            hourStr = String(h);
+          }
+
+          return `${rawYear}-${monthNum}-${dayNum} ${hourStr.padStart(2, '0')}:${minStr.padStart(2, '0')}`;
+        }
+      }
+
+      // 4. Day First with Month Name: e.g., '02-Sep-26 13:56', '02-Sep-2026 13:56', '2 September 2026 13:56'
+      const dayFirstMatch = trimmed.match(/^(\d{1,2})[-\s/]+([A-Za-z]+)[-\s/,]+(\d{2,4})(?:[T\s]+(\d{1,2}):(\d{1,2})(?::\d{1,2})?(?:\s*(AM|PM))?)?/i);
+      if (dayFirstMatch) {
+        const monthKey = dayFirstMatch[2].toLowerCase();
+        const monthNum = MONTH_MAP[monthKey];
+        if (monthNum) {
+          const dayNum = dayFirstMatch[1].padStart(2, '0');
+          let rawYear = dayFirstMatch[3];
+          if (rawYear.length === 2) {
+            rawYear = `20${rawYear}`;
+          }
+          let hourStr = dayFirstMatch[4] || '00';
+          let minStr = dayFirstMatch[5] || '00';
+          const ampm = dayFirstMatch[6];
+
+          if (ampm) {
+            let h = parseInt(hourStr, 10);
+            if (ampm.toUpperCase() === 'PM' && h < 12) h += 12;
+            if (ampm.toUpperCase() === 'AM' && h === 12) h = 0;
+            hourStr = String(h);
+          }
+
+          return `${rawYear}-${monthNum}-${dayNum} ${hourStr.padStart(2, '0')}:${minStr.padStart(2, '0')}`;
+        }
+      }
+
+      // 5. Slash/Hyphen numeric: e.g., '2026/09/01 17:38', '2026-9-1 17:38'
+      const slashYMD = trimmed.match(/^(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})(?:[T\s]+(\d{1,2}):(\d{1,2}))?/);
+      if (slashYMD) {
+        const y = slashYMD[1];
+        const m = slashYMD[2].padStart(2, '0');
+        const d = slashYMD[3].padStart(2, '0');
+        const h = (slashYMD[4] || '00').padStart(2, '0');
+        const min = (slashYMD[5] || '00').padStart(2, '0');
+        return `${y}-${m}-${d} ${h}:${min}`;
+      }
+
+      // 6. Generic Date fallback
+      const normalizedStr = trimmed.includes(' ') && !trimmed.includes('T') ? trimmed.replace(' ', 'T') : trimmed;
+      const parsed = new Date(normalizedStr);
+      if (!isNaN(parsed.getTime())) {
+        const year = parsed.getFullYear();
+        const month = String(parsed.getMonth() + 1).padStart(2, '0');
+        const day = String(parsed.getDate()).padStart(2, '0');
+        const hours = String(parsed.getHours()).padStart(2, '0');
+        const minutes = String(parsed.getMinutes()).padStart(2, '0');
+        return `${year}-${month}-${day} ${hours}:${minutes}`;
+      }
+
+      const parsedDirect = new Date(trimmed);
+      if (!isNaN(parsedDirect.getTime())) {
+        const year = parsedDirect.getFullYear();
+        const month = String(parsedDirect.getMonth() + 1).padStart(2, '0');
+        const day = String(parsedDirect.getDate()).padStart(2, '0');
+        const hours = String(parsedDirect.getHours()).padStart(2, '0');
+        const minutes = String(parsedDirect.getMinutes()).padStart(2, '0');
+        return `${year}-${month}-${day} ${hours}:${minutes}`;
       }
     }
-    return String(dateVal);
+
+    return String(dateVal || '');
   } catch {
     return String(dateVal || '');
   }

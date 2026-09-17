@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { APP_CONFIG } from '../constants/config';
+import { formatClaimDate } from '../utils/formatters';
 
 const { STORAGE_KEYS } = APP_CONFIG;
 
@@ -10,10 +11,12 @@ export const storageService = {
   async recordClaimEvent(event) {
     try {
       const existingHistory = await this.getClaimHistory();
+      const formattedDate = formatClaimDate(event.claimDate || event.timestamp || new Date());
       const newEntry = {
         id: event.transactionId + '_' + Date.now(),
         transactionId: event.transactionId,
-        timestamp: new Date().toISOString(),
+        timestamp: formattedDate,
+        claimDate: formattedDate,
         status: event.status || 'CLAIMED', // 'CLAIMED', 'SCANNED_ONLY', 'FAILED'
         winAmount: event.winAmount || 0,
         betNo: event.betNo || 'N/A',

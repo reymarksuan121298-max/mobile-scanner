@@ -191,10 +191,12 @@ export default function ScannerScreen({ navigation }) {
       const res = await claimService.executeClaim(ticketResult.transactionId);
       triggerScanFeedback('claimSuccess');
 
+      const formattedClaimDateVal = res.claimDate || formatClaimDate(res.timestamp || new Date());
+
       const updated = {
         ...ticketResult,
         isClaimed: true,
-        claimDate: res.timestamp || new Date().toISOString(),
+        claimDate: formattedClaimDateVal,
       };
       setTicketResult(updated);
 
@@ -213,6 +215,8 @@ export default function ScannerScreen({ navigation }) {
         agentId: agentId || null,
         isVercel: isVercel,
         status: 'CLAIMED',
+        claimDate: formattedClaimDateVal,
+        timestamp: formattedClaimDateVal,
         notes: isVercel
           ? `Claim disbursed for Physical Vercel Ticket (Agent #${agentId || 'N/A'})`
           : 'Claim successfully disbursed',
