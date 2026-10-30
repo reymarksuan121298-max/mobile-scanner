@@ -13,8 +13,8 @@ import {
   Platform,
   PermissionsAndroid,
   Image,
+  Clipboard,
 } from 'react-native';
-import Clipboard from '@react-native-clipboard/clipboard';
 import { Camera } from 'react-native-camera-kit';
 import { COLORS } from '../constants/theme';
 import { ScannerOverlay } from '../components/ScannerOverlay';
@@ -35,6 +35,7 @@ import {
   getBaseTransId,
   formatVercelTransId,
   formatSupervisorDisplay,
+  parseScannedQr,
 } from '../utils/formatters';
 
 export default function ScannerScreen({ navigation }) {
@@ -91,12 +92,15 @@ export default function ScannerScreen({ navigation }) {
   }, [checkCameraPermission]);
 
   /**
-   * Process a scanned QR code or manually entered Transaction ID
+   * Process a scanned QR code or manually entered Transaction ID / Hash Token
    */
   const handleProcessTransactionId = useCallback(
     async (rawCode) => {
-      const transId = cleanTransId(rawCode);
-      if (!transId || scanLockoutRef.current) return;
+      if (!rawCode || scanLockoutRef.current) return;
+
+      const parsedQr = parseScannedQr(rawCode);
+      const lookupKey = parsedQr.transactionId || parsedQr.qrHashToken || cleanTransId(rawCode);
+      if (!lookupKey) return;
 
       scanLockoutRef.current = true;
       setIsScanning(false);
@@ -107,12 +111,13 @@ export default function ScannerScreen({ navigation }) {
       }
 
       try {
-        const result = await claimService.lookupTicket(transId);
+        const result = await claimService.lookupTicket(rawCode);
 
         if (!result.found) {
+          const displayKey = result.transactionId || lookupKey;
           Alert.alert(
             'Ticket Not Found',
-            `No active bet record found for transaction ID "${transId}".`,
+            `No active bet record found for "${displayKey}".`,
             [
               {
                 text: 'OK',
@@ -126,15 +131,16 @@ export default function ScannerScreen({ navigation }) {
           return;
         }
 
-        const agentId = result.agentId || extractAgentFromTransId(result.transactionId) || extractAgentFromTransId(transId);
-        const isVercel = result.isVercel || isVercelTicket(result.transactionId) || isVercelTicket(transId);
-        const baseId = getBaseTransId(result.transactionId || transId);
+        const resolvedTransId = result.transactionId || result.baseTransactionId || lookupKey;
+        const agentId = result.agentId || extractAgentFromTransId(resolvedTransId);
+        const isVercel = result.isVercel || isVercelTicket(resolvedTransId);
+        const baseId = getBaseTransId(resolvedTransId);
 
         const enrichedResult = {
           ...result,
           transactionId: baseId,
           baseTransactionId: baseId,
-          scannedTransactionId: transId,
+          scannedTransactionId: resolvedTransId,
           agentId: agentId || null,
           isVercel,
         };
@@ -260,7 +266,13 @@ export default function ScannerScreen({ navigation }) {
 
   const handleCopyTransId = () => {
     if (!ticketResult) return;
-    Clipboard.setString(ticketResult.transactionId);
+    try {
+      if (Clipboard && typeof Clipboard.setString === 'function') {
+        Clipboard.setString(ticketResult.transactionId);
+      }
+    } catch (err) {
+      console.warn('Clipboard copy error:', err);
+    }
     setCopied(true);
     showToast('Transaction ID copied to clipboard!', 'info');
     setTimeout(() => setCopied(false), 2000);
@@ -548,24 +560,24 @@ const styles = StyleSheet.create({
   headerBrandContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
+    gap: 12,
   },
   headerLogo: {
-    width: 36,
-    height: 36,
+    width: 38,
+    height: 38,
     borderRadius: 8,
-    borderWidth: 1,
+    borderWidth: 1.5,
     borderColor: COLORS.accent,
   },
   brandTitle: {
     color: '#FFFFFF',
-    fontSize: 15,
+    fontSize: 16,
     fontWeight: '900',
-    letterSpacing: 1,
+    letterSpacing: 1.5,
   },
   brandSubtitle: {
     color: COLORS.accent,
-    fontSize: 10,
+    fontSize: 9,
     fontWeight: '800',
     letterSpacing: 0.8,
     marginTop: 2,
@@ -648,54 +660,48 @@ const styles = StyleSheet.create({
     letterSpacing: 1,
   },
   bottomControls: {
-    backgroundColor: COLORS.primaryDark,
     flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingVertical: 16,
-    paddingHorizontal: 20,
-    gap: 14,
+    padding: 16,
+    backgroundColor: COLORS.primaryDark,
+    gap: 12,
     borderTopWidth: 1,
     borderTopColor: 'rgba(255, 255, 255, 0.1)',
   },
   manualEntryBtn: {
-    flex: 1,
-    backgroundColor: COLORS.accent,
+    flex: 2,
+    backgroundColor: COLORS.surface,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 8,
     paddingVertical: 14,
     borderRadius: 12,
-    shadowColor: COLORS.accent,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.4,
-    shadowRadius: 6,
-    elevation: 4,
+    gap: 8,
+    borderWidth: 1,
+    borderColor: COLORS.border,
   },
   manualIcon: {
     fontSize: 16,
   },
   manualBtnText: {
-    color: COLORS.primaryDark,
-    fontSize: 14,
-    fontWeight: '900',
-    letterSpacing: 0.8,
+    color: COLORS.textPrimary,
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 0.5,
   },
   resetBtn: {
+    flex: 1,
     backgroundColor: 'rgba(255, 255, 255, 0.08)',
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 6,
-    paddingHorizontal: 18,
     paddingVertical: 14,
     borderRadius: 12,
+    gap: 6,
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.15)',
   },
   resetIcon: {
-    fontSize: 15,
+    fontSize: 14,
   },
   resetBtnText: {
     color: '#FFFFFF',
@@ -774,41 +780,6 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '900',
     letterSpacing: 0.5,
-  },
-  agentPill: {
-    backgroundColor: 'rgba(255, 215, 0, 0.2)',
-    borderWidth: 1,
-    borderColor: COLORS.accent,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 6,
-  },
-  agentPillText: {
-    color: COLORS.accent,
-    fontSize: 11,
-    fontWeight: '900',
-    letterSpacing: 0.5,
-  },
-  agentRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  agentVal: {
-    fontSize: 13,
-    fontWeight: '900',
-    color: COLORS.primaryDark,
-  },
-  vercelTag: {
-    fontSize: 9,
-    fontWeight: '900',
-    color: '#6366F1',
-    backgroundColor: 'rgba(99, 102, 241, 0.12)',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
-    borderWidth: 1,
-    borderColor: 'rgba(99, 102, 241, 0.3)',
   },
   payoutCard: {
     backgroundColor: COLORS.primaryDark,

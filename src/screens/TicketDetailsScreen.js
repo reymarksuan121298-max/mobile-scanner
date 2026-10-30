@@ -7,8 +7,8 @@ import {
   TouchableOpacity,
   SafeAreaView,
   Alert,
+  Clipboard,
 } from 'react-native';
-import Clipboard from '@react-native-clipboard/clipboard';
 import { COLORS } from '../constants/theme';
 import { StatusBadge } from '../components/StatusBadge';
 import { ClaimConfirmModal } from '../components/ClaimConfirmModal';
@@ -76,7 +76,13 @@ export default function TicketDetailsScreen({ navigation, route }) {
   const baseId = getBaseTransId(transactionId);
 
   const handleCopyTransId = () => {
-    Clipboard.setString(baseId);
+    try {
+      if (Clipboard && typeof Clipboard.setString === 'function') {
+        Clipboard.setString(baseId);
+      }
+    } catch (err) {
+      console.warn('Clipboard copy error:', err);
+    }
     setCopied(true);
     showToast('Transaction ID copied to clipboard!', 'info');
     setTimeout(() => setCopied(false), 2000);

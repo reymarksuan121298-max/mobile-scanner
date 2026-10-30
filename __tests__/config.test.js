@@ -19,4 +19,10 @@ describe('APP_CONFIG and API Endpoints', () => {
     expect(mandauePreset.baseUrl).toBe('https://stl-mandaue-api.com');
     expect(mandauePreset.token).toBe('Bearer 2860|OCyU72t1DzxdBeSjj3izVKCIcCwHkqNbwjRlxHp5');
   });
+
+  test('configures modern QR protocol default to legacy 0', () => {
+    expect(APP_CONFIG.qr).toBeDefined();
+    expect(APP_CONFIG.qr.legacyDefault).toBe(0);
+    expect(APP_CONFIG.scanner.qrLegacy).toBe(0);
+  });
 });

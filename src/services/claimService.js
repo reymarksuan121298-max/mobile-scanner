@@ -8,6 +8,7 @@ import {
   formatVercelTransId,
   formatClaimDate,
   formatDate,
+  parseScannedQr,
 } from '../utils/formatters';
 
 /**
@@ -70,18 +71,44 @@ const extractUsernameFromObject = (...objects) => {
  */
 export const claimService = {
   /**
-   * Look up a ticket by its transaction ID or scanned QR code value
-   * Queries GET /api/accountant/claim/{id} and enriches with supervisor/agent metadata
+   * Look up a ticket by its transaction ID, scanned QR code value, or QR hash token
+   * Queries GET /api/accountant/claim/{id} and matches against /api/accountant/UnclaimedReceipts
+   * Supports modern QR payload {"qr_hash_token": "...", "qr_legacy": 0} and legacy tickets
    */
   async lookupTicket(rawTransId) {
-    const transId = cleanTransId(rawTransId);
-    if (!transId) {
-      throw new Error('Transaction ID is required.');
+    if (!rawTransId) {
+      throw new Error('Transaction ID or QR Hash Token is required.');
     }
 
-    const agentId = extractAgentFromTransId(transId);
+    const qrData =
+      typeof rawTransId === 'object' && rawTransId !== null && (rawTransId.qrHashToken || rawTransId.qr_hash_token)
+        ? {
+            qrHashToken: rawTransId.qrHashToken || rawTransId.qr_hash_token,
+            qrLegacy: rawTransId.qrLegacy !== undefined ? rawTransId.qrLegacy : rawTransId.qr_legacy,
+            transactionId: rawTransId.transactionId || rawTransId.transId,
+            agentId: rawTransId.agentId || rawTransId.agent,
+            isModernQr: Boolean(rawTransId.qrHashToken || rawTransId.qr_hash_token),
+          }
+        : parseScannedQr(rawTransId);
+
+    const targetQrHash = qrData.qrHashToken;
+    const targetQrLegacy = qrData.qrLegacy;
+
+    // Determine initial lookup ID: explicit transaction ID or fallback to qr_hash_token
+    let transId = qrData.transactionId;
+    if (!transId && targetQrHash) {
+      transId = targetQrHash;
+    }
+    if (!transId) {
+      transId = cleanTransId(rawTransId);
+    }
+    if (!transId) {
+      throw new Error('Transaction ID or QR Hash Token is required.');
+    }
+
+    const agentId = qrData.agentId || extractAgentFromTransId(transId);
     const isVercel = isVercelTicket(transId);
-    const baseTransId = getBaseTransId(transId);
+    const baseTransId = targetQrHash && !qrData.transactionId ? null : getBaseTransId(transId);
 
     try {
       // 1. Fetch Primary Ticket Bet Data from Claim Endpoint
@@ -116,10 +143,12 @@ export const claimService = {
               activeLookupId = baseTransId;
             }
           } catch (fallbackErr) {
-            // Re-throw original error if fallback also fails
-            throw directErr;
+            // If scanning with a hash token, don't crash yet; let receipt match run
+            if (!targetQrHash) {
+              throw directErr;
+            }
           }
-        } else {
+        } else if (!targetQrHash) {
           throw directErr;
         }
       }
@@ -141,7 +170,7 @@ export const claimService = {
         }
       }
 
-      // 2. Fetch receipts to resolve Supervisor Username and Outlet Metadata
+      // 2. Fetch receipts to resolve Supervisor Username, Outlet Metadata, and QR Hash Token matches
       const getDateFromTransId = (tId) => {
         if (!tId) return null;
         const m = String(tId).match(/^(\d{2})(\d{2})(\d{2})/);
@@ -164,6 +193,7 @@ export const claimService = {
       try {
         const fetchPromises = [];
         for (const d of datesToFetch) {
+          // Normal receipts (unclaimed and claimed)
           fetchPromises.push(
             apiClient
               .get(`${APP_CONFIG.endpoints.unclaimedReceipts}?isClaim=0&from=${d}&to=${d}`)
@@ -172,6 +202,18 @@ export const claimService = {
               .get(`${APP_CONFIG.endpoints.unclaimedReceipts}?isClaim=1&from=${d}&to=${d}`)
               .catch(() => null)
           );
+
+          // If qr_legacy=0 or targetQrHash is present, also query modern QR records
+          if (targetQrLegacy === 0 || targetQrHash) {
+            fetchPromises.push(
+              apiClient
+                .get(`${APP_CONFIG.endpoints.unclaimedReceipts}?isClaim=0&from=${d}&to=${d}&qr_legacy=0`)
+                .catch(() => null),
+              apiClient
+                .get(`${APP_CONFIG.endpoints.unclaimedReceipts}?isClaim=1&from=${d}&to=${d}&qr_legacy=0`)
+                .catch(() => null)
+            );
+          }
         }
         const responses = await Promise.all(fetchPromises);
         for (const res of responses) {
@@ -184,19 +226,54 @@ export const claimService = {
         console.log('Receipts list fetch error (non-fatal):', receiptFetchErr);
       }
 
-      // Check if ticket was found in allReceipts strictly by transaction ID
+      // Check if ticket was found in allReceipts by qr_hash_token or transaction ID
+      const cleanedRaw = cleanTransId(rawTransId);
       const matchedReceipt = allReceipts.find((item) => {
         const itemTransId = String(item.transactionId || item.transId || '').trim().toLowerCase();
-        return (
-          itemTransId === transId.toLowerCase() ||
-          (baseTransId && itemTransId === baseTransId.toLowerCase())
-        );
+        const itemQrHash = String(item.qr_hash_token || item.qrHashToken || item.hash_token || item.token || '').trim().toLowerCase();
+
+        // 1. Match by qr_hash_token
+        if (targetQrHash && itemQrHash && itemQrHash === targetQrHash.toLowerCase()) {
+          return true;
+        }
+
+        // 2. Match by transaction ID
+        if (transId) {
+          if (
+            itemTransId === transId.toLowerCase() ||
+            (baseTransId && itemTransId === baseTransId.toLowerCase())
+          ) {
+            return true;
+          }
+        }
+
+        // 3. Match if item's qr_hash_token matches raw input
+        if (itemQrHash) {
+          if (cleanedRaw && itemQrHash === cleanedRaw.toLowerCase()) return true;
+          if (transId && itemQrHash === transId.toLowerCase()) return true;
+        }
+
+        return false;
       });
 
       const isFromClaimedReceipt = Boolean(matchedReceipt && Number(matchedReceipt.isClaim) === 1);
 
-      // If claimLookup did not return any tickets, but receipt exists in allReceipts by exact transactionId, reconstruct ticket
+      // If claimLookup did not return any tickets, but receipt exists in allReceipts (by qr_hash_token or transactionId), reconstruct ticket
       if (!ticketList.length && matchedReceipt) {
+        const matchedTransId = matchedReceipt.transactionId || matchedReceipt.transId;
+        // Attempt secondary lookup using the matched receipt's actual transactionId if different
+        if (matchedTransId && (!targetQrHash || matchedTransId.toLowerCase() !== targetQrHash.toLowerCase())) {
+          try {
+            const extraRes = await apiClient.get(
+              `${APP_CONFIG.endpoints.claimLookup}/${encodeURIComponent(matchedTransId)}`
+            );
+            if (Array.isArray(extraRes?.data?.data) && extraRes.data.data.length > 0) {
+              ticketList = extraRes.data.data;
+              payload = extraRes.data;
+            }
+          } catch {}
+        }
+
         const resolvedAgentId =
           agentId ||
           matchedReceipt.agentId ||
@@ -208,7 +285,8 @@ export const claimService = {
           Boolean(resolvedAgentId) ||
           isVercelTicket(matchedReceipt.transactionId || matchedReceipt.transId);
 
-        const base = baseTransId || getBaseTransId(matchedReceipt.transactionId || matchedReceipt.transId || transId);
+        const realTransId = matchedReceipt.transactionId || matchedReceipt.transId || transId;
+        const base = getBaseTransId(realTransId);
         const resolvedSupervisor = extractSupervisorFromObject(matchedReceipt);
         const resolvedUsername = extractUsernameFromObject(matchedReceipt) || resolvedSupervisor;
 
@@ -219,16 +297,31 @@ export const claimService = {
           matchedReceipt.claimed_date ||
           (isFromClaimedReceipt ? (matchedReceipt.updated_at || new Date().toISOString()) : null);
 
+        const resolvedQrHash =
+          matchedReceipt.qr_hash_token ||
+          matchedReceipt.qrHashToken ||
+          targetQrHash ||
+          null;
+
+        const resolvedQrLegacy =
+          matchedReceipt.qr_legacy !== undefined
+            ? Number(matchedReceipt.qr_legacy)
+            : targetQrLegacy !== null
+            ? targetQrLegacy
+            : 0;
+
         return {
           found: true,
           transactionId: base,
           scannedTransactionId: transId,
           baseTransactionId: base,
-          activeLookupId: matchedReceipt.transactionId || base || transId,
+          activeLookupId: realTransId,
+          qr_hash_token: resolvedQrHash,
+          qr_legacy: resolvedQrLegacy,
           agentId: resolvedAgentId,
           isVercel: resolvedIsVercel,
           primaryTicket: matchedReceipt,
-          allCombinations: [matchedReceipt],
+          allCombinations: ticketList.length ? ticketList : [matchedReceipt],
           totalWinAmount: parseFloat(matchedReceipt.winAmount || matchedReceipt.win_amount || 0),
           totalBetAmount: parseFloat(matchedReceipt.betAmount || matchedReceipt.amount || 0),
           isClaimed: isFromClaimedReceipt || Number(matchedReceipt.isClaim) === 1 || Number(matchedReceipt.is_claim) === 1,
@@ -251,9 +344,11 @@ export const claimService = {
           found: false,
           transactionId: baseTransId || transId,
           baseTransactionId: baseTransId,
+          qr_hash_token: targetQrHash || null,
+          qr_legacy: targetQrLegacy !== null ? targetQrLegacy : (targetQrHash ? 0 : null),
           agentId: agentId || null,
           isVercel: isVercel,
-          message: 'No active winning bet ticket found for this Transaction ID.',
+          message: 'No active winning bet ticket found for this Transaction ID / QR Hash Token.',
           tickets: [],
         };
       }
@@ -262,7 +357,7 @@ export const claimService = {
       const primaryTicket = ticketList[0];
       const totalWinAmount = ticketList.reduce((sum, item) => sum + parseFloat(item.winAmount || 0), 0);
       const totalBetAmount = ticketList.reduce((sum, item) => sum + parseFloat(item.betAmount || item.amount || 0), 0);
-      
+
       const isAlreadyClaimed =
         isFromClaimedReceipt ||
         ticketList.some(
@@ -276,7 +371,7 @@ export const claimService = {
             (item.claim_date !== null && item.claim_date !== undefined && item.claim_date !== '') ||
             String(item.status || '').toUpperCase() === 'CLAIMED'
         );
-      
+
       const isVoided = ticketList.some(
         (item) =>
           Number(item.isVoid) === 1 ||
@@ -341,7 +436,25 @@ export const claimService = {
 
       const resolvedClaimDate = rawClaimDate ? formatClaimDate(rawClaimDate) : null;
 
-      const base = baseTransId || getBaseTransId(primaryTicket.transactionId || transId);
+      const realTransId = primaryTicket.transactionId || matchedReceipt?.transactionId || transId;
+      const base = getBaseTransId(realTransId);
+
+      const resolvedQrHash =
+        primaryTicket.qr_hash_token ||
+        primaryTicket.qrHashToken ||
+        matchedReceipt?.qr_hash_token ||
+        matchedReceipt?.qrHashToken ||
+        targetQrHash ||
+        null;
+
+      const resolvedQrLegacy =
+        primaryTicket.qr_legacy !== undefined
+          ? Number(primaryTicket.qr_legacy)
+          : matchedReceipt?.qr_legacy !== undefined
+          ? Number(matchedReceipt.qr_legacy)
+          : targetQrLegacy !== null
+          ? targetQrLegacy
+          : 0;
 
       return {
         found: true,
@@ -349,6 +462,8 @@ export const claimService = {
         scannedTransactionId: transId,
         baseTransactionId: base,
         activeLookupId,
+        qr_hash_token: resolvedQrHash,
+        qr_legacy: resolvedQrLegacy,
         agentId: resolvedAgentId,
         isVercel: resolvedIsVercel,
         primaryTicket,
@@ -433,14 +548,17 @@ export const claimService = {
 
   /**
    * Fetch unclaimed receipts directly from endpoint
-   * GET /api/accountant/UnclaimedReceipts?isClaim={0|1}&from={date}&to={date}
+   * GET /api/accountant/UnclaimedReceipts?isClaim={0|1}&from={date}&to={date}&qr_legacy={0|1}
    */
-  async fetchUnclaimedReceipts({ isClaim = 0, from, to } = {}) {
+  async fetchUnclaimedReceipts({ isClaim = 0, from, to, qr_legacy } = {}) {
     try {
       const params = new URLSearchParams();
       params.append('isClaim', String(isClaim));
       if (from) params.append('from', from);
       if (to) params.append('to', to);
+      if (qr_legacy !== undefined && qr_legacy !== null) {
+        params.append('qr_legacy', String(qr_legacy));
+      }
 
       const queryString = params.toString();
       const url = `${APP_CONFIG.endpoints.unclaimedReceipts}?${queryString}`;
@@ -482,4 +600,3 @@ export const claimService = {
     }
   }
 };
-

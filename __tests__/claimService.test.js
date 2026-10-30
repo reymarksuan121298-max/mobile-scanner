@@ -160,4 +160,94 @@ describe('claimService Ticket Verification & Claim Status', () => {
     expect(capturedPayload.claim_date).toMatch(/^\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}$/);
     expect(res.claimDate).toMatch(/^\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}$/);
   });
+
+  test('matches transaction by qr_hash_token and qr_legacy: 0 from unclaimedReceipts endpoint', async () => {
+    apiClient.get.mockImplementation((url) => {
+      // Direct claim lookup by hash might return empty
+      if (url.includes('/api/accountant/claim/hash_secret_token_777')) {
+        return Promise.resolve({ data: { message: 'Not found', data: [] } });
+      }
+      if (url.includes('/api/accountant/UnclaimedReceipts')) {
+        return Promise.resolve({
+          data: {
+            data: [
+              {
+                transactionId: '091626-IAUI6BKD',
+                qr_hash_token: 'hash_secret_token_777',
+                qr_legacy: 0,
+                tellerId: 371,
+                fullName: 'Jimmy Anchero',
+                betNo: '304',
+                betCode: 'RS3',
+                winAmount: 833,
+                betAmount: 10,
+                isClaim: 0,
+                created_at: '2026-09-16 13:35:52',
+              },
+            ],
+          },
+        });
+      }
+      return Promise.reject(new Error('Not found'));
+    });
+
+    const qrScanInput = JSON.stringify({
+      qr_hash_token: 'hash_secret_token_777',
+      qr_legacy: 0,
+    });
+
+    const result = await claimService.lookupTicket(qrScanInput);
+    expect(result.found).toBe(true);
+    expect(result.transactionId).toBe('091626-IAUI6BKD');
+    expect(result.qr_hash_token).toBe('hash_secret_token_777');
+    expect(result.qr_legacy).toBe(0);
+    expect(result.isClaimed).toBe(false);
+    expect(result.totalWinAmount).toBe(833);
+    expect(result.betNo).toBe('304');
+    expect(result.fullName).toBe('Jimmy Anchero');
+  });
+
+  test('identifies claimed ticket when scanned via qr_hash_token and qr_legacy: 0', async () => {
+    apiClient.get.mockImplementation((url) => {
+      if (url.includes('/api/accountant/claim/hash_claimed_888')) {
+        return Promise.resolve({ data: { message: 'Not found', data: [] } });
+      }
+      if (url.includes('/api/accountant/UnclaimedReceipts')) {
+        return Promise.resolve({
+          data: {
+            data: [
+              {
+                transactionId: '091426-OAAO3XNQ',
+                qr_hash_token: 'hash_claimed_888',
+                qr_legacy: 0,
+                betNo: '601',
+                betAmount: 100,
+                winAmount: 50000,
+                betCode: 'TS3',
+                isClaim: 1,
+                claimDate: '2026-09-14 15:52',
+                fullName: 'Jimmy Anchero',
+                created_at: '2026-09-14 13:43:06',
+              },
+            ],
+          },
+        });
+      }
+      return Promise.reject(new Error('Not found'));
+    });
+
+    const qrScanInput = JSON.stringify({
+      qr_hash_token: 'hash_claimed_888',
+      qr_legacy: 0,
+    });
+
+    const result = await claimService.lookupTicket(qrScanInput);
+    expect(result.found).toBe(true);
+    expect(result.transactionId).toBe('091426-OAAO3XNQ');
+    expect(result.qr_hash_token).toBe('hash_claimed_888');
+    expect(result.qr_legacy).toBe(0);
+    expect(result.isClaimed).toBe(true);
+    expect(result.totalWinAmount).toBe(50000);
+    expect(result.claimDate).toBe('2026-09-14 15:52');
+  });
 });

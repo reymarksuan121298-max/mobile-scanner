@@ -24,6 +24,11 @@ export const APP_CONFIG = {
     unclaimedReceipts: '/api/accountant/UnclaimedReceipts', // GET /api/accountant/UnclaimedReceipts?isClaim=0
   },
 
+  // QR Protocol Configuration
+  qr: {
+    legacyDefault: 0,
+  },
+
   // Storage Keys
   STORAGE_KEYS: {
     AUTH_TOKEN: '@stl_scanner_auth_token',
@@ -39,6 +44,6 @@ export const APP_CONFIG = {
     vibrateOnScan: true,
     soundOnScan: true,
     autoOpenDetails: true,
+    qrLegacy: 0,
   }
 };
-

@@ -8,6 +8,7 @@ import {
   formatCurrency,
   formatDrawTime,
   formatClaimDate,
+  parseScannedQr,
 } from '../src/utils/formatters';
 
 describe('Vercel Physical Ticket & Transaction ID Parsing', () => {
@@ -78,6 +79,66 @@ describe('Vercel Physical Ticket & Transaction ID Parsing', () => {
   });
 });
 
+describe('Modern QR Code Parsing (qr_hash_token & qr_legacy: 0)', () => {
+  test('parses JSON payload containing qr_hash_token and qr_legacy: 0', () => {
+    const payload = JSON.stringify({
+      qr_hash_token: 'hash_9a8b7c6d5e4f3a2b1c',
+      qr_legacy: 0,
+    });
+    const parsed = parseScannedQr(payload);
+    expect(parsed.qrHashToken).toBe('hash_9a8b7c6d5e4f3a2b1c');
+    expect(parsed.qrLegacy).toBe(0);
+    expect(parsed.isModernQr).toBe(true);
+  });
+
+  test('parses JSON payload containing both transactionId and qr_hash_token with qr_legacy: 0', () => {
+    const payload = JSON.stringify({
+      transactionId: '091626-IAUI6BKD',
+      qr_hash_token: 'hash_secure_token_100',
+      qr_legacy: 0,
+      agentId: '227',
+    });
+    const parsed = parseScannedQr(payload);
+    expect(parsed.transactionId).toBe('091626-IAUI6BKD');
+    expect(parsed.qrHashToken).toBe('hash_secure_token_100');
+    expect(parsed.qrLegacy).toBe(0);
+    expect(parsed.agentId).toBe('227');
+    expect(parsed.isModernQr).toBe(true);
+  });
+
+  test('parses URL query string with qr_hash_token and qr_legacy: 0', () => {
+    const url = 'https://stl-mandaue-api.com/claim?qr_hash_token=hash_token_url_123&qr_legacy=0';
+    const parsed = parseScannedQr(url);
+    expect(parsed.qrHashToken).toBe('hash_token_url_123');
+    expect(parsed.qrLegacy).toBe(0);
+    expect(parsed.isModernQr).toBe(true);
+  });
+
+  test('parses plain key-value text containing qr_hash_token and qr_legacy: 0', () => {
+    const text = '"qr_hash_token": "token_text_888",\n"qr_legacy": 0';
+    const parsed = parseScannedQr(text);
+    expect(parsed.qrHashToken).toBe('token_text_888');
+    expect(parsed.qrLegacy).toBe(0);
+    expect(parsed.isModernQr).toBe(true);
+  });
+
+  test('falls back gracefully to legacy transaction ID format when no qr_hash_token exists', () => {
+    const parsed = parseScannedQr('022226-UOOKNZNNVERCEL227');
+    expect(parsed.transactionId).toBe('022226-UOOKNZNNVERCEL227');
+    expect(parsed.qrHashToken).toBe(null);
+    expect(parsed.agentId).toBe('227');
+    expect(parsed.isModernQr).toBe(false);
+  });
+
+  test('cleanTransId extracts qr_hash_token when present in JSON', () => {
+    const jsonStr = JSON.stringify({
+      qr_hash_token: 'hash_clean_test_999',
+      qr_legacy: 0,
+    });
+    expect(cleanTransId(jsonStr)).toBe('HASH_CLEAN_TEST_999');
+  });
+});
+
 describe('Supervisor / Username Formatting', () => {
   test('formats supervisor username with @ prefix', () => {
     expect(formatSupervisorDisplay(null, 'spvr-molly', '87')).toBe('@spvr-molly');
@@ -128,4 +189,3 @@ describe('Claim Date Formatting (Uniform All-Numbers Format)', () => {
     expect(formatClaimDate('N/A')).toBe('');
   });
 });
-

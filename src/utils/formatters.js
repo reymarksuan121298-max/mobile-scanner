@@ -214,8 +214,122 @@ export const formatClaimDate = (dateVal) => {
 export const formatDateTime = formatClaimDate;
 
 /**
+ * Parse & Extract Scanned QR Code Payload
+ * Handles modern QR codes containing:
+ *   - JSON: {"qr_hash_token": "...", "qr_legacy": 0}
+ *   - URLs / Query strings: ?qr_hash_token=...&qr_legacy=0
+ *   - Key-Value pairs: qr_hash_token: ..., qr_legacy: 0
+ *   - Legacy formats: transactionId, VERCEL IDs, raw IDs
+ */
+export const parseScannedQr = (rawInput) => {
+  if (!rawInput) {
+    return {
+      raw: '',
+      qrHashToken: null,
+      qrLegacy: null,
+      transactionId: null,
+      agentId: null,
+      isModernQr: false,
+    };
+  }
+
+  const str = String(rawInput).trim();
+  let qrHashToken = null;
+  let qrLegacy = null;
+  let transactionId = null;
+  let agentId = null;
+
+  // 1. Check JSON Object
+  if (str.startsWith('{') && str.endsWith('}')) {
+    try {
+      const parsed = JSON.parse(str);
+      qrHashToken =
+        parsed.qr_hash_token ||
+        parsed.qrHashToken ||
+        parsed.hash_token ||
+        parsed.token ||
+        null;
+
+      if (parsed.qr_legacy !== undefined && parsed.qr_legacy !== null) {
+        qrLegacy = Number(parsed.qr_legacy);
+      }
+
+      transactionId =
+        parsed.transactionId ||
+        parsed.transId ||
+        parsed.trans_id ||
+        parsed.id ||
+        parsed.code ||
+        parsed.ticketId ||
+        null;
+
+      agentId = parsed.agentId || parsed.agent || parsed.agent_id || null;
+    } catch {}
+  }
+
+  // 2. Check Query Parameters (e.g. from URLs or query strings)
+  if (!qrHashToken && str.includes('?')) {
+    const queryPart = str.split('?')[1];
+    if (queryPart) {
+      const params = queryPart.split('&');
+      for (const param of params) {
+        const [k, v] = param.split('=');
+        const key = (k || '').toLowerCase();
+        const decoded = v ? decodeURIComponent(v) : '';
+
+        if (['qr_hash_token', 'qrhashtoken', 'hash_token', 'hash'].includes(key) && decoded) {
+          qrHashToken = decoded;
+        }
+        if (key === 'qr_legacy' && decoded !== '') {
+          qrLegacy = Number(decoded);
+        }
+        if (['id', 'transid', 'transactionid', 'code', 'ticket', 't'].includes(key) && decoded) {
+          transactionId = decoded;
+        }
+        if (['agent', 'agentid', 'agent_id', 'a'].includes(key) && decoded) {
+          agentId = decoded;
+        }
+      }
+    }
+  }
+
+  // 3. Check Key-Value Pattern in plain string (e.g., "qr_hash_token": "..." \n "qr_legacy": 0)
+  if (!qrHashToken) {
+    const hashMatch = str.match(/["']?qr_hash_token["']?\s*[:=]\s*["']?([A-Za-z0-9_\-]+)["']?/i);
+    if (hashMatch && hashMatch[1]) {
+      qrHashToken = hashMatch[1];
+    }
+    const legacyMatch = str.match(/["']?qr_legacy["']?\s*[:=]\s*["']?(\d+)["']?/i);
+    if (legacyMatch && legacyMatch[1] !== undefined) {
+      qrLegacy = Number(legacyMatch[1]);
+    }
+  }
+
+  // 4. Resolve fallback transactionId
+  if (!transactionId && !qrHashToken) {
+    const cleaned = cleanTransId(str);
+    if (cleaned) {
+      transactionId = cleaned;
+    }
+  }
+
+  if (transactionId && !agentId) {
+    agentId = extractAgentFromTransId(transactionId);
+  }
+
+  return {
+    raw: str,
+    qrHashToken,
+    qrLegacy: qrLegacy !== null ? qrLegacy : (qrHashToken ? 0 : null),
+    transactionId,
+    agentId,
+    isModernQr: Boolean(qrHashToken),
+  };
+};
+
+/**
  * Clean & Normalize Scanned Transaction ID / QR Code Value
- * Supports physical hard copy tickets, receipts, URLs, JSON payloads, and VERCEL agent IDs (e.g., 022226-UOOKNZNNVERCEL227)
+ * Supports physical hard copy tickets, receipts, URLs, JSON payloads, qr_hash_token, and VERCEL agent IDs
  */
 export const cleanTransId = (rawInput) => {
   if (!rawInput) return '';
@@ -231,7 +345,10 @@ export const cleanTransId = (rawInput) => {
         parsed.trans_id ||
         parsed.id ||
         parsed.code ||
-        parsed.ticketId;
+        parsed.ticketId ||
+        parsed.qr_hash_token ||
+        parsed.qrHashToken ||
+        parsed.hash_token;
       const possibleAgent = parsed.agentId || parsed.agent || parsed.agent_id;
       if (possibleKey) {
         str = String(possibleKey).trim();
@@ -244,7 +361,7 @@ export const cleanTransId = (rawInput) => {
     }
   }
 
-  // 2. Handle URL query parameters if present (e.g. ?id=..., ?transId=..., ?agent=...)
+  // 2. Handle URL query parameters if present (e.g. ?id=..., ?transId=..., ?qr_hash_token=...)
   if (str.includes('?')) {
     const queryPart = str.split('?')[1];
     if (queryPart) {
@@ -254,7 +371,7 @@ export const cleanTransId = (rawInput) => {
       for (const param of params) {
         const [k, v] = param.split('=');
         const key = (k || '').toLowerCase();
-        if (['id', 'transid', 'transactionid', 'code', 'ticket', 't'].includes(key) && v) {
+        if (['id', 'transid', 'transactionid', 'code', 'ticket', 't', 'qr_hash_token', 'qrhashtoken'].includes(key) && v) {
           foundId = decodeURIComponent(v);
         }
         if (['agent', 'agentid', 'agent_id', 'a'].includes(key) && v) {
@@ -282,7 +399,7 @@ export const cleanTransId = (rawInput) => {
   const rawAgentMatch = String(rawInput).match(/(?:VERCEL|AGENT)[_\s#:.-]*(\d+)/i);
   const rawAgentId = rawAgentMatch ? rawAgentMatch[1] : null;
 
-  // 4. Extract standard transaction ID pattern
+  // 4. Extract standard transaction ID pattern if present
   // Matches: 022226-UOOKNZNNVERCEL227, 022226-UOOKNZNN-VERCEL227, 022226-UOOKNZNN_VERCEL227
   const vercelComboMatch = str.match(/(\d{6}-[A-Za-z0-9]+)[-_:\s]?(VERCEL\d+)/i);
   if (vercelComboMatch) {
