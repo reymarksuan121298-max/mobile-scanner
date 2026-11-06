@@ -24,5 +24,7 @@ describe('APP_CONFIG and API Endpoints', () => {
     expect(APP_CONFIG.qr).toBeDefined();
     expect(APP_CONFIG.qr.legacyDefault).toBe(0);
     expect(APP_CONFIG.scanner.qrLegacy).toBe(0);
+    expect(APP_CONFIG.scanner.claimedModalAutoCloseMs).toBe(250);
+    expect(APP_CONFIG.scanner.claimedPopoverDurationMs).toBe(3000);
   });
 });

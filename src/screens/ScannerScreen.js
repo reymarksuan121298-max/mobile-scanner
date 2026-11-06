@@ -17,6 +17,7 @@ import {
 } from 'react-native';
 import { Camera } from 'react-native-camera-kit';
 import { COLORS } from '../constants/theme';
+import { APP_CONFIG } from '../constants/config';
 import { ScannerOverlay } from '../components/ScannerOverlay';
 import { ManualEntryModal } from '../components/ManualEntryModal';
 import { StatusBadge } from '../components/StatusBadge';
@@ -52,8 +53,13 @@ export default function ScannerScreen({ navigation }) {
   const [confirmClaimModalOpen, setConfirmClaimModalOpen] = useState(false);
   const [isProcessingClaim, setIsProcessingClaim] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [claimedPopover, setClaimedPopover] = useState(null);
 
   const scanLockoutRef = useRef(false);
+  const isProcessingRef = useRef(false);
+  const lastScannedRef = useRef({ code: '', time: 0 });
+  const autoCloseTimerRef = useRef(null);
+  const popoverTimerRef = useRef(null);
 
   // Request Android Camera Permissions on Launch
   const checkCameraPermission = useCallback(async () => {
@@ -96,14 +102,20 @@ export default function ScannerScreen({ navigation }) {
    */
   const handleProcessTransactionId = useCallback(
     async (rawCode) => {
-      if (!rawCode || scanLockoutRef.current) return;
+      if (!rawCode || scanLockoutRef.current || isProcessingRef.current) return;
+
+      const now = Date.now();
+      // Deduplicate: if exact same code was scanned < 1200ms ago, ignore duplicate frame
+      if (lastScannedRef.current.code === rawCode && now - lastScannedRef.current.time < 1200) {
+        return;
+      }
 
       const parsedQr = parseScannedQr(rawCode);
       const lookupKey = parsedQr.transactionId || parsedQr.qrHashToken || cleanTransId(rawCode);
       if (!lookupKey) return;
 
-      scanLockoutRef.current = true;
-      setIsScanning(false);
+      isProcessingRef.current = true;
+      lastScannedRef.current = { code: rawCode, time: now };
       setIsSearching(true);
 
       if (settings?.vibrateOnScan !== false) {
@@ -122,6 +134,7 @@ export default function ScannerScreen({ navigation }) {
               {
                 text: 'OK',
                 onPress: () => {
+                  isProcessingRef.current = false;
                   scanLockoutRef.current = false;
                   setIsScanning(true);
                 },
@@ -163,6 +176,59 @@ export default function ScannerScreen({ navigation }) {
             : 'Scanned via QR Terminal',
         });
 
+        // If ticket is already claimed, notify via floating PopOver HUD with pleasant chime (1-to-1 continuous scanning)
+        if (result.isClaimed) {
+          triggerScanFeedback('claimed');
+
+          if (popoverTimerRef.current) {
+            clearTimeout(popoverTimerRef.current);
+            popoverTimerRef.current = null;
+          }
+
+          const supervisorName = formatSupervisorDisplay(
+            result.username,
+            result.supervisor,
+            agentId
+          );
+
+          setClaimedPopover({
+            transactionId: baseId,
+            winAmount: result.totalWinAmount,
+            betNo: result.betNo,
+            betCode: result.betCode,
+            claimDate: result.claimDate,
+            fullName: result.fullName,
+            supervisor: supervisorName,
+          });
+
+          const popoverDuration =
+            settings?.claimedPopoverDurationMs ?? APP_CONFIG.scanner.claimedPopoverDurationMs ?? 3000;
+
+          popoverTimerRef.current = setTimeout(() => {
+            setClaimedPopover(null);
+            popoverTimerRef.current = null;
+          }, popoverDuration);
+
+          setManualModalOpen(false);
+
+          // Fast 1-to-1 continuous re-arm: unlock within 400ms so the next ticket can be scanned immediately
+          setTimeout(() => {
+            isProcessingRef.current = false;
+            scanLockoutRef.current = false;
+            setIsScanning(true);
+          }, 400);
+
+          return;
+        }
+
+        // Unclaimed ticket: lock scanner and open full verification bottom sheet modal
+        scanLockoutRef.current = true;
+        setIsScanning(false);
+        if (popoverTimerRef.current) {
+          clearTimeout(popoverTimerRef.current);
+          popoverTimerRef.current = null;
+        }
+        setClaimedPopover(null);
         setTicketResult(enrichedResult);
         setManualModalOpen(false);
       } catch (err) {
@@ -173,6 +239,7 @@ export default function ScannerScreen({ navigation }) {
             {
               text: 'Retry',
               onPress: () => {
+                isProcessingRef.current = false;
                 scanLockoutRef.current = false;
                 setIsScanning(true);
               },
@@ -183,7 +250,7 @@ export default function ScannerScreen({ navigation }) {
         setIsSearching(false);
       }
     },
-    [settings?.vibrateOnScan, addClaimRecord]
+    [settings?.vibrateOnScan, settings?.claimedPopoverDurationMs, addClaimRecord]
   );
 
   /**
@@ -255,14 +322,71 @@ export default function ScannerScreen({ navigation }) {
   };
 
   /**
+   * Dismiss the already claimed PopOver notification
+   */
+  const handleDismissPopover = useCallback(() => {
+    if (popoverTimerRef.current) {
+      clearTimeout(popoverTimerRef.current);
+      popoverTimerRef.current = null;
+    }
+    setClaimedPopover(null);
+  }, []);
+
+  /**
    * Close ticket modal and immediately resume scanner
    */
-  const handleCloseAndScanNext = () => {
+  const handleCloseAndScanNext = useCallback(() => {
+    if (autoCloseTimerRef.current) {
+      clearTimeout(autoCloseTimerRef.current);
+      autoCloseTimerRef.current = null;
+    }
+    if (popoverTimerRef.current) {
+      clearTimeout(popoverTimerRef.current);
+      popoverTimerRef.current = null;
+    }
+    setClaimedPopover(null);
     setTicketResult(null);
     setConfirmClaimModalOpen(false);
+    isProcessingRef.current = false;
+    lastScannedRef.current = { code: '', time: 0 };
     scanLockoutRef.current = false;
     setIsScanning(true);
-  };
+  }, []);
+
+  /**
+   * Auto-close verification modal in 0.25s (250ms) if the ticket is already claimed
+   */
+  useEffect(() => {
+    if (autoCloseTimerRef.current) {
+      clearTimeout(autoCloseTimerRef.current);
+      autoCloseTimerRef.current = null;
+    }
+
+    if (ticketResult && ticketResult.isClaimed) {
+      const autoCloseDelay =
+        settings?.claimedModalAutoCloseMs ?? APP_CONFIG.scanner.claimedModalAutoCloseMs ?? 250;
+
+      autoCloseTimerRef.current = setTimeout(() => {
+        handleCloseAndScanNext();
+      }, autoCloseDelay);
+    }
+
+    return () => {
+      if (autoCloseTimerRef.current) {
+        clearTimeout(autoCloseTimerRef.current);
+        autoCloseTimerRef.current = null;
+      }
+    };
+  }, [ticketResult?.isClaimed, ticketResult?.transactionId, settings?.claimedModalAutoCloseMs, handleCloseAndScanNext]);
+
+  useEffect(() => {
+    return () => {
+      if (popoverTimerRef.current) {
+        clearTimeout(popoverTimerRef.current);
+        popoverTimerRef.current = null;
+      }
+    };
+  }, []);
 
   const handleCopyTransId = () => {
     if (!ticketResult) return;
@@ -281,9 +405,6 @@ export default function ScannerScreen({ navigation }) {
   const currentAgentId =
     ticketResult?.agentId ||
     (ticketResult?.transactionId ? extractAgentFromTransId(ticketResult.transactionId) : null);
-  const currentIsVercel =
-    ticketResult?.isVercel ||
-    (ticketResult?.transactionId ? isVercelTicket(ticketResult.transactionId) : false);
 
   return (
     <SafeAreaView style={styles.container}>
@@ -316,7 +437,7 @@ export default function ScannerScreen({ navigation }) {
         {hasPermission ? (
           <Camera
             style={StyleSheet.absoluteFill}
-            scanBarcode={isScanning && !ticketResult && !isSearching}
+            scanBarcode={isScanning && !ticketResult}
             onReadCode={(event) => {
               const code = event?.nativeEvent?.codeStringValue;
               if (code) {
@@ -349,6 +470,70 @@ export default function ScannerScreen({ navigation }) {
             <Text style={styles.searchingText}>VERIFYING TICKET LEDGER...</Text>
           </View>
         )}
+
+        {/* Already Claimed PopOver HUD Notification */}
+        {claimedPopover && (
+          <View style={styles.popoverWrapper}>
+            <TouchableOpacity
+              activeOpacity={0.92}
+              style={styles.popoverCard}
+              onPress={handleDismissPopover}
+            >
+              <View style={styles.popoverHeader}>
+                <View style={styles.popoverBadge}>
+                  <Text style={styles.popoverIcon}>⚠️</Text>
+                  <Text style={styles.popoverBadgeText}>ALREADY CLAIMED</Text>
+                </View>
+                <TouchableOpacity
+                  style={styles.popoverCloseBtn}
+                  hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                  onPress={handleDismissPopover}
+                >
+                  <Text style={styles.popoverCloseText}>✕</Text>
+                </TouchableOpacity>
+              </View>
+
+              <View style={styles.popoverContent}>
+                <View style={styles.popoverRow}>
+                  <Text style={styles.popoverLabel}>TRANS ID</Text>
+                  <Text style={styles.popoverTransId}>{claimedPopover.transactionId}</Text>
+                </View>
+
+                {Number(claimedPopover.winAmount) > 0 && (
+                  <View style={styles.popoverRow}>
+                    <Text style={styles.popoverLabel}>PAYOUT</Text>
+                    <Text style={styles.popoverAmount}>
+                      {formatCurrency(claimedPopover.winAmount)}
+                    </Text>
+                  </View>
+                )}
+
+                {claimedPopover.betNo ? (
+                  <View style={styles.popoverRow}>
+                    <Text style={styles.popoverLabel}>COMBINATION</Text>
+                    <Text style={styles.popoverComb}>{claimedPopover.betNo}</Text>
+                  </View>
+                ) : null}
+
+                {claimedPopover.supervisor ? (
+                  <View style={styles.popoverRow}>
+                    <Text style={styles.popoverLabel}>SUPERVISOR</Text>
+                    <Text style={styles.popoverSupervisor}>{claimedPopover.supervisor}</Text>
+                  </View>
+                ) : null}
+
+                <View style={styles.popoverFooterRow}>
+                  <Text style={styles.popoverDate}>
+                    {claimedPopover.claimDate
+                      ? `Claimed: ${formatClaimDate(claimedPopover.claimDate)}`
+                      : 'Previously disbursed'}
+                  </Text>
+                  <Text style={styles.popoverDismissHint}>Tap to dismiss</Text>
+                </View>
+              </View>
+            </TouchableOpacity>
+          </View>
+        )}
       </View>
 
       {/* Bottom Control Bar */}
@@ -364,7 +549,9 @@ export default function ScannerScreen({ navigation }) {
         <TouchableOpacity
           style={styles.resetBtn}
           onPress={() => {
+            isProcessingRef.current = false;
             scanLockoutRef.current = false;
+            lastScannedRef.current = { code: '', time: 0 };
             setIsScanning(true);
             showToast('Scanner ready.', 'info');
           }}
@@ -411,15 +598,6 @@ export default function ScannerScreen({ navigation }) {
               </View>
 
               <ScrollView contentContainerStyle={styles.sheetBody}>
-                {/* Physical VERCEL Ticket Badge Banner */}
-                {currentIsVercel && (
-                  <View style={styles.vercelBanner}>
-                    <View style={styles.vercelPill}>
-                      <Text style={styles.vercelPillText}>⚡ PHYSICAL TICKET (VERCEL)</Text>
-                    </View>
-                  </View>
-                )}
-
                 {/* Big Payout Highlight */}
                 <View style={styles.payoutCard}>
                   <Text style={styles.payoutLabel}>TOTAL WINNING PAYOUT</Text>
@@ -945,5 +1123,120 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '800',
     letterSpacing: 0.5,
+  },
+  popoverWrapper: {
+    position: 'absolute',
+    top: 14,
+    left: 14,
+    right: 14,
+    zIndex: 9999,
+  },
+  popoverCard: {
+    backgroundColor: '#0F172A',
+    borderRadius: 14,
+    borderWidth: 1.5,
+    borderColor: COLORS.warning,
+    padding: 14,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.5,
+    shadowRadius: 10,
+    elevation: 14,
+  },
+  popoverHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.08)',
+    paddingBottom: 8,
+  },
+  popoverBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(245, 158, 11, 0.18)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    gap: 6,
+  },
+  popoverIcon: {
+    fontSize: 14,
+  },
+  popoverBadgeText: {
+    color: COLORS.warning,
+    fontSize: 12,
+    fontWeight: '900',
+    letterSpacing: 0.8,
+  },
+  popoverCloseBtn: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  popoverCloseText: {
+    color: '#94A3B8',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  popoverContent: {
+    gap: 6,
+  },
+  popoverRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  popoverLabel: {
+    color: '#94A3B8',
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  popoverTransId: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '900',
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+    letterSpacing: 0.5,
+  },
+  popoverAmount: {
+    color: COLORS.accent,
+    fontSize: 14,
+    fontWeight: '900',
+  },
+  popoverComb: {
+    color: '#F8FAFC',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  popoverSupervisor: {
+    color: '#E2E8F0',
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 0.3,
+  },
+  popoverFooterRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 6,
+    paddingTop: 6,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255, 255, 255, 0.06)',
+  },
+  popoverDate: {
+    color: '#CBD5E1',
+    fontSize: 10,
+    fontWeight: '600',
+  },
+  popoverDismissHint: {
+    color: '#64748B',
+    fontSize: 9,
+    fontStyle: 'italic',
   },
 });

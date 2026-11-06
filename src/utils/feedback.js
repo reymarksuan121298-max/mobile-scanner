@@ -1,11 +1,32 @@
-import { Vibration, Platform } from 'react-native';
+import { Vibration, Platform, NativeModules } from 'react-native';
 
 /**
- * Trigger Haptic / Vibration Feedback for QR Scans
+ * Play pleasant acoustic chime for already-claimed ticket
+ */
+export const playClaimedSound = () => {
+  try {
+    if (NativeModules.SoundModule && typeof NativeModules.SoundModule.playClaimedSound === 'function') {
+      NativeModules.SoundModule.playClaimedSound();
+    }
+  } catch (err) {
+    console.warn('SoundModule error:', err);
+  }
+};
+
+/**
+ * Trigger Haptic / Vibration & Audio Feedback for QR Scans
  */
 export const triggerScanFeedback = (type = 'success') => {
   try {
-    if (type === 'success') {
+    if (type === 'claimed') {
+      // Pleasant acoustic chime + soft double vibration for already-claimed tickets
+      playClaimedSound();
+      if (Platform.OS === 'android') {
+        Vibration.vibrate([0, 50, 60, 80]);
+      } else {
+        Vibration.vibrate(80);
+      }
+    } else if (type === 'success') {
       // Crisp single pulse for successful scan
       if (Platform.OS === 'android') {
         Vibration.vibrate(70);
@@ -14,6 +35,7 @@ export const triggerScanFeedback = (type = 'success') => {
       }
     } else if (type === 'claimSuccess') {
       // Double pulse for confirmed claim payout
+      playClaimedSound();
       if (Platform.OS === 'android') {
         Vibration.vibrate([0, 100, 80, 120]);
       } else {

@@ -45,5 +45,7 @@ export const APP_CONFIG = {
     soundOnScan: true,
     autoOpenDetails: true,
     qrLegacy: 0,
+    claimedModalAutoCloseMs: 250, // Auto-close already claimed modal (0.25 second)
+    claimedPopoverDurationMs: 3000, // Duration to display already-claimed popover HUD (3.0s)
   }
 };
